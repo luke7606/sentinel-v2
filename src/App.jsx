@@ -56,7 +56,7 @@ async function callGroq({ apiKey, system, messages, maxTokens = 700 }) {
     method: "POST",
     headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKey}` },
     body: JSON.stringify({
-      model: "llama-3.1-8b-instant", max_tokens: maxTokens, temperature: 0.2,
+      model: "llama-3.3-70b-versatile", max_tokens: maxTokens, temperature: 0.4,
       messages: [{ role: "system", content: system }, ...messages.slice(-3)],
     }),
   });
@@ -249,7 +249,7 @@ const LANG = {
     welcomeClient:(n)=>`Hi **${n}**! I have full access to your project documentation. What would you like to know?`,
     welcomeInternal:(n,area)=>`Hi **${n}**! I'm your ${area} assistant. Ask me anything about your area.`,
     sysClient:(proj,name,docs)=>`You are Sentinel, support AI for project "${proj}" (client: ${name}). English, technical, concise. Max 3 steps. If unresolved start with ESCALAR_N2.\n${docs?`DOCS:\n${docs}`:"No docs."}`,
-    sysAdmin:(projects,docs)=>`You are Sentinel, executive AI for Dramhost agency.\nProjects:\n${projects}\n${docs?`Docs:\n${docs}`:""}`,
+    sysAdmin:(projects,docs)=>`You are Sentinel, a proactive executive AI for Dramhost. ACTIVELY ANALYZE all context — projects, docs, Slack, ClickUp — and detect risks, bugs and inconsistencies WITHOUT waiting to be asked. When answering, scan everything first and report what you find proactively. If docs mention a bug, alert. If Slack and ClickUp disagree, flag it. Be direct and executive.\\nPROJECTS:\\n${projects}\\n${docs?`FULL CONTEXT:\\n${docs}`:"No documents indexed."}`,
     sysInternal:{ pm:"You are Sentinel PM Assistant. Help with project tracking, sprints, milestones and velocity.", hr:"You are Sentinel HR Assistant. Help with team hours, headcount and people metrics.", finance:"You are Sentinel Finance Assistant. Help with budget tracking and forecasting.", support:"You are Sentinel Support Assistant. Help diagnose issues and suggest fixes." },
   },
   es: {
@@ -899,7 +899,7 @@ export default function Sentinel() {
       <aside style={S.sidebar}>
         <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:16,paddingBottom:14,borderBottom:"1px solid #1e293b"}}>
           <div style={S.logoBox}>S</div>
-          <div><div style={{fontWeight:800,fontSize:13,color:"#f1f5f9",letterSpacing:1}}>SENTINEL</div><div style={{fontSize:9,color:"#10b981"}}>● Groq · llama-3.1-8b</div></div>
+          <div><div style={{fontWeight:800,fontSize:13,color:"#f1f5f9",letterSpacing:1}}>SENTINEL</div><div style={{fontSize:9,color:"#10b981"}}>● Groq · llama-3.3-70b</div></div>
         </div>
         <div style={{background:"#1e293b",borderRadius:8,padding:"8px 10px",marginBottom:12,fontSize:11}}>
           {user.role==="admin"&&<div style={{color:"#818cf8",fontWeight:700}}>⚡ {t.adminRole}</div>}
