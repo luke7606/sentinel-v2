@@ -1,52 +1,62 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-// -- SUPABASE --
-const SUPA_URL = import.meta.env.VITE_SUPA_URL || "";
-const SUPA_KEY = import.meta.env.VITE_SUPA_KEY || "";
-const DB_ENABLED = !!(SUPA_URL && SUPA_KEY);
+// -- LOCAL STORAGE PERSISTENCE --
+const DB_ENABLED = true;
+const LS_PROJECTS = "sentinel_projects";
+const LS_CONFIG   = "sentinel_config";
 
-async function supaFetch(path, opts={}) {
-  if (!SUPA_URL || !SUPA_KEY) return null;
-  const r = await fetch(SUPA_URL+"/rest/v1"+path, {
-    headers: { "apikey":SUPA_KEY, "Authorization":"Bearer "+SUPA_KEY, "Content-Type":"application/json", "Prefer":opts.prefer||"return=representation", ...(opts.headers||{}) },
-    ...opts,
-  });
-  if (!r.ok) { console.warn("Supa err",r.status); return null; }
-  const txt = await r.text(); return txt ? JSON.parse(txt) : null;
-}
 async function dbLoad() {
-  const rows = await supaFetch("/sentinel_projects?select=*,sentinel_docs(*)&order=created_at");
-  if (!rows) return null;
-  const out={};
-  for (const p of rows) {
-    out[p.id]={ id:p.id, name:p.name, client:p.client, type:p.type, color:p.color,
-      status:p.status, health:p.health, budget:p.budget, spent:p.spent,
-      startDate:p.start_date, dueDate:p.due_date,
-      milestones:p.milestones||[], team:p.team||[], tickets:p.tickets||[],
-      activity:p.activity||[], isDemo:p.is_demo,
-      docs:(p.sentinel_docs||[]).map(d=>({id:d.id,name:d.name,type:d.type,source:d.source,content:d.content,uploadedAt:d.uploaded_at})) };
-  }
-  return out;
+  try {
+    const raw = localStorage.getItem(LS_PROJECTS);
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
 }
 async function dbSaveProject(proj) {
-  const row={ id:proj.id, name:proj.name, client:proj.client, type:proj.type||"client",
-    color:proj.color, status:proj.status, health:proj.health, budget:proj.budget||0, spent:proj.spent||0,
-    start_date:proj.startDate, due_date:proj.dueDate, milestones:proj.milestones||[],
-    team:proj.team||[], tickets:proj.tickets||[], activity:proj.activity||[],
-    is_demo:proj.isDemo||false, updated_at:new Date().toISOString() };
-  await supaFetch("/sentinel_projects",{method:"POST",body:JSON.stringify(row),headers:{"Prefer":"resolution=merge-duplicates,return=minimal"}});
+  try {
+    const all = JSON.parse(localStorage.getItem(LS_PROJECTS)||"{}");
+    all[proj.id] = proj;
+    localStorage.setItem(LS_PROJECTS, JSON.stringify(all));
+  } catch(e) { console.error("LS save error", e); }
 }
-async function dbDeleteProject(id) { await supaFetch("/sentinel_projects?id=eq."+id,{method:"DELETE"}); }
-async function dbSaveDoc(doc,projectId) {
-  const row={id:String(doc.id),project_id:projectId,name:doc.name,type:doc.type,source:doc.source,content:(doc.content||'').slice(0,50000),uploaded_at:doc.uploadedAt};
-  await supaFetch("/sentinel_docs",{method:"POST",body:JSON.stringify(row),headers:{"Prefer":"resolution=merge-duplicates,return=minimal"}});
+async function dbDeleteProject(id) {
+  try {
+    const all = JSON.parse(localStorage.getItem(LS_PROJECTS)||"{}");
+    delete all[id];
+    localStorage.setItem(LS_PROJECTS, JSON.stringify(all));
+  } catch(e) { console.error("LS delete error", e); }
 }
-async function dbDeleteDoc(id) { await supaFetch("/sentinel_docs?id=eq."+id,{method:"DELETE"}); }
-async function dbSaveConfig(key,value) {
-  await supaFetch("/sentinel_config",{method:"POST",body:JSON.stringify({key,value,updated_at:new Date().toISOString()}),headers:{"Prefer":"resolution=merge-duplicates,return=minimal"}});
+async function dbSaveDoc(doc, projectId) {
+  try {
+    const all = JSON.parse(localStorage.getItem(LS_PROJECTS)||"{}");
+    if (all[projectId]) {
+      const docs = all[projectId].docs || [];
+      const idx = docs.findIndex(d => d.id === doc.id);
+      if (idx >= 0) docs[idx] = doc; else docs.push(doc);
+      all[projectId].docs = docs;
+      localStorage.setItem(LS_PROJECTS, JSON.stringify(all));
+    }
+  } catch(e) { console.error("LS doc save error", e); }
+}
+async function dbDeleteDoc(id) {
+  try {
+    const all = JSON.parse(localStorage.getItem(LS_PROJECTS)||"{}");
+    for (const pid in all) {
+      if (all[pid].docs) all[pid].docs = all[pid].docs.filter(d => d.id !== id);
+    }
+    localStorage.setItem(LS_PROJECTS, JSON.stringify(all));
+  } catch(e) { console.error("LS doc delete error", e); }
+}
+async function dbSaveConfig(key, value) {
+  try {
+    const cfg = JSON.parse(localStorage.getItem(LS_CONFIG)||"{}");
+    cfg[key] = value;
+    localStorage.setItem(LS_CONFIG, JSON.stringify(cfg));
+  } catch(e) { console.error("LS config save error", e); }
 }
 async function dbLoadConfig(key) {
-  const rows=await supaFetch("/sentinel_config?key=eq."+key+"&select=value");
-  return rows?.[0]?.value||null;
+  try {
+    const cfg = JSON.parse(localStorage.getItem(LS_CONFIG)||"{}");
+    return cfg[key] || null;
+  } catch { return null; }
 }
 
 
@@ -939,7 +949,7 @@ export default function Sentinel() {
         <div style={{paddingBottom:4}}>
           {DB_ENABLED && (
             <div style={{fontSize:9,color:dbSyncing?"#f59e0b":"#10b981",marginBottom:6,textAlign:"center"}}>
-              {dbSyncing?"⟳ syncing...":"● supabase connected"}
+              {dbSyncing?"⟳ syncing...":"● storage ready"}
             </div>
           )}
           <LangToggle lang={lang} setLang={setLang}/>
