@@ -243,7 +243,7 @@ const LANG = {
     projectCreated:"Project created via Sentinel", justNow:"just now",
     configureWhatsapp:"Configure WhatsApp number in Admin → Integrations",
     configureEmail:"Configure EmailJS in Admin → Integrations",
-    autoMilestones:t.autoMilestones,
+    autoMilestones:"Auto-generated milestones",
     statusLabels:{"on-track":"On Track","at-risk":"At Risk","off-track":"Off Track","done":"Done","in-progress":"In Progress","pending":"Pending","open":"Open","resolved":"Resolved"},
     welcomeAdmin:(n,count)=>`Welcome back, **${n}**. All ${count} projects are loaded. How can I help?`,
     welcomeClient:(n)=>`Hi **${n}**! I have full access to your project documentation. What would you like to know?`,
