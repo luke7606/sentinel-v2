@@ -1,4 +1,54 @@
 import { useState, useRef, useEffect, useCallback } from "react";
+// -- SUPABASE --
+const SUPA_URL = import.meta.env.VITE_SUPA_URL || "";
+const SUPA_KEY = import.meta.env.VITE_SUPA_KEY || "";
+const DB_ENABLED = !!(SUPA_URL && SUPA_KEY);
+
+async function supaFetch(path, opts={}) {
+  if (!SUPA_URL || !SUPA_KEY) return null;
+  const r = await fetch(SUPA_URL+"/rest/v1"+path, {
+    headers: { "apikey":SUPA_KEY, "Authorization":"Bearer "+SUPA_KEY, "Content-Type":"application/json", "Prefer":opts.prefer||"return=representation", ...(opts.headers||{}) },
+    ...opts,
+  });
+  if (!r.ok) { console.warn("Supa err",r.status); return null; }
+  const txt = await r.text(); return txt ? JSON.parse(txt) : null;
+}
+async function dbLoad() {
+  const rows = await supaFetch("/sentinel_projects?select=*,sentinel_docs(*)&order=created_at");
+  if (!rows) return null;
+  const out={};
+  for (const p of rows) {
+    out[p.id]={ id:p.id, name:p.name, client:p.client, type:p.type, color:p.color,
+      status:p.status, health:p.health, budget:p.budget, spent:p.spent,
+      startDate:p.start_date, dueDate:p.due_date,
+      milestones:p.milestones||[], team:p.team||[], tickets:p.tickets||[],
+      activity:p.activity||[], isDemo:p.is_demo,
+      docs:(p.sentinel_docs||[]).map(d=>({id:d.id,name:d.name,type:d.type,source:d.source,content:d.content,uploadedAt:d.uploaded_at})) };
+  }
+  return out;
+}
+async function dbSaveProject(proj) {
+  const row={ id:proj.id, name:proj.name, client:proj.client, type:proj.type||"client",
+    color:proj.color, status:proj.status, health:proj.health, budget:proj.budget||0, spent:proj.spent||0,
+    start_date:proj.startDate, due_date:proj.dueDate, milestones:proj.milestones||[],
+    team:proj.team||[], tickets:proj.tickets||[], activity:proj.activity||[],
+    is_demo:proj.isDemo||false, updated_at:new Date().toISOString() };
+  await supaFetch("/sentinel_projects",{method:"POST",body:JSON.stringify(row),headers:{"Prefer":"resolution=merge-duplicates,return=minimal"}});
+}
+async function dbDeleteProject(id) { await supaFetch("/sentinel_projects?id=eq."+id,{method:"DELETE"}); }
+async function dbSaveDoc(doc,projectId) {
+  const row={id:String(doc.id),project_id:projectId,name:doc.name,type:doc.type,source:doc.source,content:(doc.content||'').slice(0,50000),uploaded_at:doc.uploadedAt};
+  await supaFetch("/sentinel_docs",{method:"POST",body:JSON.stringify(row),headers:{"Prefer":"resolution=merge-duplicates,return=minimal"}});
+}
+async function dbDeleteDoc(id) { await supaFetch("/sentinel_docs?id=eq."+id,{method:"DELETE"}); }
+async function dbSaveConfig(key,value) {
+  await supaFetch("/sentinel_config",{method:"POST",body:JSON.stringify({key,value,updated_at:new Date().toISOString()}),headers:{"Prefer":"resolution=merge-duplicates,return=minimal"}});
+}
+async function dbLoadConfig(key) {
+  const rows=await supaFetch("/sentinel_config?key=eq."+key+"&select=value");
+  return rows?.[0]?.value||null;
+}
+
 
 // ── GROQ ─────────────────────────────────────────────────────
 async function callGroq({ apiKey, system, messages, maxTokens = 700 }) {
@@ -183,6 +233,17 @@ const LANG = {
     severityLabels:{ high:"High", medium:"Medium", low:"Low" },
     clickupSync:"ClickUp Sync", syncTasks:"Sync Tasks", syncing:"Syncing...",
     tasksLoaded:"tasks loaded", lastSynced:"Last synced:",
+    notConnected:"Not connected", connected:"Connected", noKey:"No key",
+    loadSpaces:"Load Spaces", configureClickup:"Configure your token and List ID",
+    suggestedAction:"→ Suggested action:",
+    scanPromptTitle:"Press 'Scan Now' to analyze your connected sources",
+    scanPromptSub:"Sentinel will cross-reference ClickUp, docs and project data",
+    deleteProject:"Delete project", deleteConfirm:"Delete this project and all its data?",
+    demoTag:"DEMO", newProject:"New Project",
+    projectCreated:"Project created via Sentinel", justNow:"just now",
+    configureWhatsapp:"Configure WhatsApp number in Admin → Integrations",
+    configureEmail:"Configure EmailJS in Admin → Integrations",
+    autoMilestones:t.autoMilestones,
     statusLabels:{"on-track":"On Track","at-risk":"At Risk","off-track":"Off Track","done":"Done","in-progress":"In Progress","pending":"Pending","open":"Open","resolved":"Resolved"},
     welcomeAdmin:(n,count)=>`Welcome back, **${n}**. All ${count} projects are loaded. How can I help?`,
     welcomeClient:(n)=>`Hi **${n}**! I have full access to your project documentation. What would you like to know?`,
@@ -253,6 +314,17 @@ const LANG = {
     severityLabels:{ high:"Alto", medium:"Medio", low:"Bajo" },
     clickupSync:"Sincronización ClickUp", syncTasks:"Sincronizar Tareas", syncing:"Sincronizando...",
     tasksLoaded:"tareas cargadas", lastSynced:"Última sincronización:",
+    notConnected:"No conectado", connected:"Conectado", noKey:"Sin key",
+    loadSpaces:"Cargar Spaces", configureClickup:"Configurá tu token y List ID",
+    suggestedAction:"→ Acción sugerida:",
+    scanPromptTitle:"Presioná 'Escanear Ahora' para analizar tus fuentes",
+    scanPromptSub:"Sentinel cruzará ClickUp, documentos y datos de proyectos",
+    deleteProject:"Eliminar proyecto", deleteConfirm:"¿Eliminar este proyecto y todos sus datos?",
+    demoTag:"DEMO", newProject:"Nuevo Proyecto",
+    projectCreated:"Proyecto creado en Sentinel", justNow:"ahora mismo",
+    configureWhatsapp:"Configurá el número de WhatsApp en Admin → Integraciones",
+    configureEmail:"Configurá EmailJS en Admin → Integraciones",
+    autoMilestones:"Milestones generados automáticamente",
     statusLabels:{"on-track":"En Curso","at-risk":"En Riesgo","off-track":"Fuera de Curso","done":"Listo","in-progress":"En Progreso","pending":"Pendiente","open":"Abierto","resolved":"Resuelto"},
     welcomeAdmin:(n,count)=>`Bienvenido, **${n}**. Los ${count} proyectos están cargados. ¿En qué puedo ayudarte?`,
     welcomeClient:(n)=>`¡Hola **${n}**! Tengo acceso a toda la documentación de tu proyecto. ¿Qué necesitás saber?`,
@@ -265,9 +337,9 @@ const LANG = {
 
 // ── DEMO DATA ─────────────────────────────────────────────────
 const DEMO_PROJECTS = {
-  "nova-commerce": { id:"nova-commerce", name:"Nova Commerce Platform", client:"RetailCo Inc.", type:"client", color:"#6366f1", status:"on-track", health:87, budget:120000, spent:94000, startDate:"2025-01-15", dueDate:"2025-06-30", milestones:[{id:"m1",name:"Discovery & Architecture",due:"2025-02-15",status:"done"},{id:"m2",name:"Core Backend APIs",due:"2025-03-30",status:"done"},{id:"m3",name:"Frontend MVP",due:"2025-04-30",status:"in-progress"},{id:"m4",name:"Integrations & Testing",due:"2025-05-31",status:"pending"},{id:"m5",name:"Launch & Handoff",due:"2025-06-30",status:"pending"}], team:["Alex Rivera","Sam Chen","Jordan Lee","Taylor Kim"], docs:[{id:"d1",name:"Tech Stack & Runbook",type:"text",source:"manual",uploadedAt:"2025-02-01",content:`Project: Nova Commerce Platform | Client: RetailCo Inc.\nStack: Node.js 20, React 18, PostgreSQL 15, Redis 7, AWS EC2\nPAYMENTS: Stripe v3 · webhook /api/payments/webhook\nINVENTORY: cron every 5min · Redis TTL 300s\nINFRA: AWS EC2 + PM2 · deploy: ./scripts/deploy.sh`}], tickets:[], activity:[{type:"commit",text:"feat: add Stripe webhook handler",user:"Alex Rivera",time:"2h ago"},{type:"task",text:"Frontend MVP — Sprint 4 started",user:"Sam Chen",time:"5h ago"}] },
-  "fleet-tracker": { id:"fleet-tracker", name:"Fleet Tracker 360", client:"LogiCorp SA", type:"client", color:"#10b981", status:"at-risk", health:61, budget:85000, spent:71000, startDate:"2025-02-01", dueDate:"2025-07-15", milestones:[{id:"m1",name:"GPS Integration Layer",due:"2025-03-01",status:"done"},{id:"m2",name:"Real-time Dashboard",due:"2025-04-15",status:"at-risk"},{id:"m3",name:"Mobile App Beta",due:"2025-05-30",status:"pending"},{id:"m4",name:"Reporting Module",due:"2025-06-30",status:"pending"}], team:["Morgan Walsh","Casey Park"], docs:[{id:"d2",name:"Architecture Overview",type:"text",source:"manual",uploadedAt:"2025-02-10",content:`Project: Fleet Tracker 360 | Client: LogiCorp SA\nStack: Python FastAPI, React Native, PostgreSQL, Redis\nGPS: WebSocket stream · update every 30s\nMOBILE: React Native 0.73 · Expo`}], tickets:[{id:"TKT-0012",summary:"Real-time map not updating after 10min idle",status:"open",severity:"high",createdAt:"2025-04-10T10:00:00Z",conversation:[{role:"user",content:"Map stops updating after 10 minutes of idle"}]}], activity:[{type:"alert",text:"Milestone 2 at risk — 3 tasks overdue",user:"System",time:"30m ago"},{type:"commit",text:"fix: websocket reconnection logic",user:"Morgan Walsh",time:"3h ago"}] },
-  "hr-portal": { id:"hr-portal", name:"HR Self-Service Portal", client:"Internal — Dramhost", type:"hr", color:"#f59e0b", status:"on-track", health:92, budget:45000, spent:28000, startDate:"2025-03-01", dueDate:"2025-07-01", milestones:[{id:"m1",name:"Auth & Roles",due:"2025-03-31",status:"done"},{id:"m2",name:"Leave Management",due:"2025-04-30",status:"done"},{id:"m3",name:"Payroll Integration",due:"2025-05-31",status:"in-progress"}], team:["Riley Johnson","Drew Martinez"], docs:[], tickets:[], activity:[{type:"task",text:"Payroll API integration — 70% complete",user:"Riley Johnson",time:"1h ago"}] },
+  "nova-commerce": { id:"nova-commerce", isDemo:true, name:"Nova Commerce Platform", client:"RetailCo Inc.", type:"client", color:"#6366f1", status:"on-track", health:87, budget:120000, spent:94000, startDate:"2025-01-15", dueDate:"2025-06-30", milestones:[{id:"m1",name:"Discovery & Architecture",due:"2025-02-15",status:"done"},{id:"m2",name:"Core Backend APIs",due:"2025-03-30",status:"done"},{id:"m3",name:"Frontend MVP",due:"2025-04-30",status:"in-progress"},{id:"m4",name:"Integrations & Testing",due:"2025-05-31",status:"pending"},{id:"m5",name:"Launch & Handoff",due:"2025-06-30",status:"pending"}], team:["Alex Rivera","Sam Chen","Jordan Lee","Taylor Kim"], docs:[{id:"d1",name:"Tech Stack & Runbook",type:"text",source:"manual",uploadedAt:"2025-02-01",content:`Project: Nova Commerce Platform | Client: RetailCo Inc.\nStack: Node.js 20, React 18, PostgreSQL 15, Redis 7, AWS EC2\nPAYMENTS: Stripe v3 · webhook /api/payments/webhook\nINVENTORY: cron every 5min · Redis TTL 300s\nINFRA: AWS EC2 + PM2 · deploy: ./scripts/deploy.sh`}], tickets:[], activity:[{type:"commit",text:"feat: add Stripe webhook handler",user:"Alex Rivera",time:"2h ago"},{type:"task",text:"Frontend MVP — Sprint 4 started",user:"Sam Chen",time:"5h ago"}] },
+  "fleet-tracker": { id:"fleet-tracker", isDemo:true, name:"Fleet Tracker 360", client:"LogiCorp SA", type:"client", color:"#10b981", status:"at-risk", health:61, budget:85000, spent:71000, startDate:"2025-02-01", dueDate:"2025-07-15", milestones:[{id:"m1",name:"GPS Integration Layer",due:"2025-03-01",status:"done"},{id:"m2",name:"Real-time Dashboard",due:"2025-04-15",status:"at-risk"},{id:"m3",name:"Mobile App Beta",due:"2025-05-30",status:"pending"},{id:"m4",name:"Reporting Module",due:"2025-06-30",status:"pending"}], team:["Morgan Walsh","Casey Park"], docs:[{id:"d2",name:"Architecture Overview",type:"text",source:"manual",uploadedAt:"2025-02-10",content:`Project: Fleet Tracker 360 | Client: LogiCorp SA\nStack: Python FastAPI, React Native, PostgreSQL, Redis\nGPS: WebSocket stream · update every 30s\nMOBILE: React Native 0.73 · Expo`}], tickets:[{id:"TKT-0012",summary:"Real-time map not updating after 10min idle",status:"open",severity:"high",createdAt:"2025-04-10T10:00:00Z",conversation:[{role:"user",content:"Map stops updating after 10 minutes of idle"}]}], activity:[{type:"alert",text:"Milestone 2 at risk — 3 tasks overdue",user:"System",time:"30m ago"},{type:"commit",text:"fix: websocket reconnection logic",user:"Morgan Walsh",time:"3h ago"}] },
+  "hr-portal": { id:"hr-portal", isDemo:true, name:"HR Self-Service Portal", client:"Internal — Dramhost", type:"hr", color:"#f59e0b", status:"on-track", health:92, budget:45000, spent:28000, startDate:"2025-03-01", dueDate:"2025-07-01", milestones:[{id:"m1",name:"Auth & Roles",due:"2025-03-31",status:"done"},{id:"m2",name:"Leave Management",due:"2025-04-30",status:"done"},{id:"m3",name:"Payroll Integration",due:"2025-05-31",status:"in-progress"}], team:["Riley Johnson","Drew Martinez"], docs:[], tickets:[], activity:[{type:"task",text:"Payroll API integration — 70% complete",user:"Riley Johnson",time:"1h ago"}] },
 };
 
 const USERS = {
@@ -387,9 +459,9 @@ function MonitorView({t, groqKey, clickupTasks, projects, allDocs, onCreateTicke
       {/* Source status strip */}
       <div style={{display:"flex",gap:8,marginBottom:20,flexWrap:"wrap"}}>
         {[
-          {name:"ClickUp", ok:hasClickup, detail: hasClickup ? `${clickupTasks.length} ${t.tasksLoaded}` : "Not connected"},
+          {name:"ClickUp", ok:hasClickup, detail: hasClickup ? `${clickupTasks.length} ${t.tasksLoaded}` : t.notConnected},
           {name:"Docs", ok:Object.values(projects).some(p=>p.docs?.length), detail:`${Object.values(projects).flatMap(p=>p.docs||[]).length} indexed`},
-          {name:"Groq AI", ok:!!groqKey, detail: groqKey ? "Connected" : "No key"},
+          {name:"Groq AI", ok:!!groqKey, detail: groqKey ? t.connected : t.noKey},
         ].map(src=>(
           <div key={src.name} style={{display:"flex",alignItems:"center",gap:6,background:"#1e293b",borderRadius:7,padding:"6px 12px",border:`1px solid ${src.ok?"#166534":"#334155"}`}}>
             <div style={{width:6,height:6,borderRadius:"50%",background:src.ok?"#10b981":"#475569"}}/>
@@ -403,8 +475,8 @@ function MonitorView({t, groqKey, clickupTasks, projects, allDocs, onCreateTicke
       {!lastScan ? (
         <div style={{textAlign:"center",padding:"60px 0",color:"#475569"}}>
           <div style={{fontSize:32,marginBottom:12}}>🔍</div>
-          <div style={{fontSize:14,color:"#64748b",marginBottom:8}}>{lang==="es"?"Presioná 'Escanear Ahora' para analizar tus fuentes":"Press 'Scan Now' to analyze your connected sources"}</div>
-          <div style={{fontSize:12,color:"#334155"}}>{lang==="es"?"Sentinel cruzará ClickUp, documentos y datos de proyectos":"Sentinel will cross-reference ClickUp, docs and project data"}</div>
+          <div style={{fontSize:14,color:"#64748b",marginBottom:8}}>{t.scanPromptTitle}</div>
+          <div style={{fontSize:12,color:"#334155"}}>{t.scanPromptSub}</div>
         </div>
       ) : visible.length === 0 ? (
         <div style={{textAlign:"center",padding:"60px 0"}}>
@@ -433,7 +505,7 @@ function MonitorView({t, groqKey, clickupTasks, projects, allDocs, onCreateTicke
                 </div>
                 <div style={{fontSize:12,color:"#94a3b8",marginBottom:8,paddingLeft:16}}>{a.detail}</div>
                 <div style={{fontSize:11,color:"#64748b",paddingLeft:16,marginBottom:10}}>
-                  <span style={{color:"#818cf8",fontWeight:600}}>{lang==="es"?"→ Acción sugerida:":"→ Suggested action:"}</span> {a.action}
+                  <span style={{color:"#818cf8",fontWeight:600}}>{t.suggestedAction}</span> {a.action}
                 </div>
                 <div style={{display:"flex",gap:6,paddingLeft:16}}>
                   <button onClick={()=>onCreateTicket(a)} style={{...S.smBtn,borderColor:"#ef4444",color:"#ef4444",fontSize:11}}>🎫 {t.createTicket}</button>
@@ -459,7 +531,7 @@ function NewProjectModal({t,lang,onClose,onCreate}) {
   const handleCreate=()=>{
     if(!name.trim())return;
     const id=name.toLowerCase().replace(/\s+/g,"-")+"-"+Date.now().toString().slice(-4);
-    onCreate({id,name,client:client||"TBD",type:tmpl,color:tpl.color,status:"on-track",health:100,budget:parseInt(budget)||0,spent:0,startDate:new Date().toISOString().split("T")[0],dueDate:dueDate||"",milestones:tpl.milestones.map((m,i)=>({id:`m${i+1}`,name:m,due:"",status:"pending"})),team:[],docs:[],tickets:[],activity:[{type:"task",text:`Project created via Sentinel`,user:"Admin",time:"just now"}]});
+    onCreate({id,name,client:client||"TBD",type:tmpl,color:tpl.color,status:"on-track",health:100,budget:parseInt(budget)||0,spent:0,startDate:new Date().toISOString().split("T")[0],dueDate:dueDate||"",milestones:tpl.milestones.map((m,i)=>({id:`m${i+1}`,name:m,due:"",status:"pending"})),team:[],docs:[],tickets:[],activity:[{type:"task",text:t.projectCreated||"Project created",user:"Admin",time:t.justNow||"just now"}]});
     onClose();
   };
 
@@ -512,6 +584,8 @@ export default function Sentinel() {
   const [loginErr, setLoginErr]       = useState("");
   const [view, setView]               = useState("dashboard");
   const [projects, setProjects]       = useState(DEMO_PROJECTS);
+  const [dbLoaded, setDbLoaded]       = useState(false);
+  const [dbSyncing, setDbSyncing]     = useState(false);
   const [activeProject, setActive]    = useState("nova-commerce");
   const [messages, setMessages]       = useState([]);
   const [input, setInput]             = useState("");
@@ -540,6 +614,27 @@ export default function Sentinel() {
   const t = LANG[lang];
 
   useEffect(()=>{bottomRef.current?.scrollIntoView({behavior:"smooth"});},[messages]);
+
+  // Load projects from Supabase on mount
+  useEffect(()=>{
+    if(!DB_ENABLED){setDbLoaded(true);return;}
+    setDbSyncing(true);
+    dbLoad().then(data=>{
+      if(data&&Object.keys(data).length>0){
+        setProjects(data);
+        setActive(Object.keys(data)[0]);
+      }
+      setDbLoaded(true);setDbSyncing(false);
+    }).catch(()=>{setDbLoaded(true);setDbSyncing(false);});
+  },[]);
+
+  // Load ClickUp token from Supabase config
+  useEffect(()=>{
+    if(!DB_ENABLED)return;
+    dbLoadConfig("cu_token").then(v=>{if(v){setCuToken(v);localStorage.setItem("sentinel_cu_token",v);}});
+    dbLoadConfig("cu_list").then(v=>{if(v){setCuListId(v);localStorage.setItem("sentinel_cu_list",v);}});
+    dbLoadConfig("wa_num").then(v=>{if(v)localStorage.setItem("sentinel_wa",v);});
+  },[]);
 
   const pid     = user?.projectId||activeProject;
   const project = projects[pid];
@@ -628,7 +723,9 @@ export default function Sentinel() {
 
   const makeTicket=(summary,conv)=>{
     const tkt={id:"TKT-"+String(Date.now()).slice(-4),projectId:pid,summary,conversation:[...conv],status:"open",severity:"high",createdAt:new Date().toISOString()};
-    setProjects(p=>({...p,[pid]:{...p[pid],tickets:[...(p[pid]?.tickets||[]),tkt]}}));
+    const updated={...projects[pid],tickets:[...(projects[pid]?.tickets||[]),tkt]};
+    setProjects(p=>({...p,[pid]:updated}));
+    if(DB_ENABLED) dbSaveProject(updated).catch(console.error);
     return tkt;
   };
 
@@ -639,7 +736,10 @@ export default function Sentinel() {
   };
 
   const resolveTicket=(tId,res)=>{
-    setProjects(p=>({...p,[pid]:{...p[pid],tickets:p[pid].tickets.map(tk=>tk.id===tId?{...tk,status:"resolved",resolution:res,resolvedAt:new Date().toISOString()}:tk)}}));
+    const updatedTickets=projects[pid].tickets.map(tk=>tk.id===tId?{...tk,status:"resolved",resolution:res,resolvedAt:new Date().toISOString()}:tk);
+    const updated={...projects[pid],tickets:updatedTickets};
+    setProjects(p=>({...p,[pid]:updated}));
+    if(DB_ENABLED) dbSaveProject(updated).catch(console.error);
     setSelectedTkt(null);
   };
   const suggestReply=async(tkt)=>{
@@ -650,13 +750,32 @@ export default function Sentinel() {
   const uploadFiles=async(files)=>{
     for(const file of Array.from(files)){
       const parsed=await parseFile(file);
-      const doc={id:Date.now()+Math.random(),...parsed,source:"upload",uploadedAt:new Date().toISOString().split("T")[0]};
+      const doc={id:String(Date.now()+Math.random()),...parsed,source:"upload",uploadedAt:new Date().toISOString().split("T")[0]};
       setProjects(p=>({...p,[pid]:{...p[pid],docs:[...(p[pid]?.docs||[]),doc]}}));
+      if(DB_ENABLED) dbSaveDoc(doc,pid).catch(console.error);
     }
   };
   const addUrl=()=>{if(!urlInput.trim())return;const doc={id:Date.now(),name:urlInput,type:"url",source:"url",content:`[URL: ${urlInput}]`,uploadedAt:new Date().toISOString().split("T")[0]};setProjects(p=>({...p,[pid]:{...p[pid],docs:[...(p[pid]?.docs||[]),doc]}}));setUrlInput("");};
-  const addScript=()=>{if(!scriptTxt.trim())return;const doc={id:Date.now(),name:lang==="es"?"Entrada Manual":"Manual Entry",type:"text",source:"manual",content:scriptTxt,uploadedAt:new Date().toISOString().split("T")[0]};setProjects(p=>({...p,[pid]:{...p[pid],docs:[...(p[pid]?.docs||[]),doc]}}));setScriptTxt("");};
-  const createProject=(proj)=>{setProjects(p=>({...p,[proj.id]:proj}));setActive(proj.id);setView("data");};
+  const addScript=()=>{if(!scriptTxt.trim())return;const doc={id:String(Date.now()),name:lang==="es"?"Entrada Manual":"Manual Entry",type:"text",source:"manual",content:scriptTxt,uploadedAt:new Date().toISOString().split("T")[0]};setProjects(p=>({...p,[pid]:{...p[pid],docs:[...(p[pid]?.docs||[]),doc]}}));if(DB_ENABLED)dbSaveDoc(doc,pid).catch(console.error);setScriptTxt("");};
+  // DB-aware project updater
+  const saveProject = (proj) => {
+    setProjects(p=>({...p,[proj.id]:proj}));
+    if(DB_ENABLED) dbSaveProject(proj).catch(console.error);
+  };
+
+  const createProject=(proj)=>{
+    setProjects(p=>({...p,[proj.id]:proj}));
+    setActive(proj.id);setView("data");
+    if(DB_ENABLED) dbSaveProject(proj).catch(console.error);
+  };
+  const deleteProject=(projId)=>{
+    if(!window.confirm(t.deleteConfirm)) return;
+    setProjects(p=>{const n={...p};delete n[projId];return n;});
+    if(DB_ENABLED) dbDeleteProject(projId).catch(console.error);
+    const remaining=Object.keys(projects).filter(k=>k!==projId);
+    if(remaining.length>0) setActive(remaining[0]);
+    else setActive("");
+  };
 
   const allTickets=Object.values(projects).flatMap(p=>(p.tickets||[]).map(tk=>({...tk,projectName:p.name})));
   const visibleProjects=user?.role==="client"?[projects[user.projectId]].filter(Boolean):Object.values(projects);
@@ -772,7 +891,14 @@ export default function Sentinel() {
             </button>
           ))}
         </nav>
-        <div style={{paddingBottom:10}}><LangToggle lang={lang} setLang={setLang}/></div>
+        <div style={{paddingBottom:4}}>
+          {DB_ENABLED && (
+            <div style={{fontSize:9,color:dbSyncing?"#f59e0b":"#10b981",marginBottom:6,textAlign:"center"}}>
+              {dbSyncing?"⟳ syncing...":"● supabase connected"}
+            </div>
+          )}
+          <LangToggle lang={lang} setLang={setLang}/>
+        </div>
         <div style={{borderTop:"1px solid #1e293b",paddingTop:12,display:"flex",alignItems:"center",gap:8}}>
           <Avatar user={user}/>
           <div style={{flex:1}}><div style={{fontSize:12,fontWeight:600,color:"#e2e8f0"}}>{user.name}</div><div style={{fontSize:10,color:"#64748b",textTransform:"capitalize"}}>{user.role}{user.area?` · ${user.area}`:""}</div></div>
@@ -789,7 +915,7 @@ export default function Sentinel() {
                 <h2 style={S.panelH}>{user.role==="admin"?t.agencyOverview:user.role==="client"?project?.name:getAreaLabel(user.area)}</h2>
                 <p style={S.panelSub}>{user.role==="admin"?`${Object.keys(projects).length} ${t.activeProjectsSub}`:user.role==="client"?user.name:""}</p>
               </div>
-              {user.role==="admin"&&<button onClick={()=>setShowNewProj(true)} style={{...S.smBtn,borderColor:"#4f46e5",color:"#818cf8"}}><I.Plus/> {lang==="es"?"Nuevo Proyecto":"New Project"}</button>}
+              {user.role==="admin"&&<button onClick={()=>setShowNewProj(true)} style={{...S.smBtn,borderColor:"#4f46e5",color:"#818cf8"}}><I.Plus/> {t.newProject}</button>}
             </div>
             <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10,marginBottom:20}}>
               {user.role==="admin"&&<><MetricCard label={t.activeProjects} value={Object.keys(projects).length} sub={t.acrossClients}/><MetricCard label={t.avgHealth} value={`${Math.round(Object.values(projects).reduce((s,p)=>s+p.health,0)/Object.keys(projects).length)}%`} sub={t.portfolioScore} color="#10b981"/><MetricCard label={t.openTickets} value={allTickets.filter(tk=>tk.status==="open").length} sub={t.awaitingRes} color="#ef4444"/><MetricCard label={t.totalBudget} value={`$${(Object.values(projects).reduce((s,p)=>s+p.budget,0)/1000).toFixed(0)}k`} sub={t.underMgmt} color="#f59e0b"/></>}
@@ -813,7 +939,15 @@ export default function Sentinel() {
                   </div>
                   <div style={{marginTop:10,display:"flex",flexDirection:"column",gap:4}}>{proj.milestones?.slice(0,3).map(m=><div key={m.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",fontSize:11}}><span style={{color:"#94a3b8"}}>{m.name}</span><StatusBadge status={m.status} t={t}/></div>)}</div>
                   {proj.activity?.length>0&&<div style={{marginTop:10,paddingTop:8,borderTop:"1px solid #1e293b"}}><div style={{fontSize:11,color:"#475569",marginBottom:4}}>{t.recentActivity}</div>{proj.activity.slice(0,2).map((a,i)=><div key={i} style={{fontSize:11,color:"#64748b",marginBottom:2}}><span style={{color:"#94a3b8"}}>{a.user}</span> · {a.text} · <span style={{color:"#475569"}}>{a.time}</span></div>)}</div>}
-                  <div style={{marginTop:8,fontSize:11,color:"#4f46e5"}}>{t.askAI}</div>
+                  <div style={{marginTop:8,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                    <span style={{fontSize:11,color:"#4f46e5"}}>{t.askAI}</span>
+                    {user.role==="admin"&&(
+                      <div style={{display:"flex",gap:4,alignItems:"center"}}>
+                        {proj.isDemo&&<span style={{fontSize:9,background:"#1e293b",color:"#475569",padding:"1px 5px",borderRadius:3,fontWeight:700}}>{t.demoTag}</span>}
+                        <button onClick={e=>{e.stopPropagation();deleteProject(proj.id);}} style={{...S.iconBtn,color:"#ef4444",fontSize:10}} title={t.deleteProject}>✕</button>
+                      </div>
+                    )}
+                  </div>
                 </div>
               ))}
             </div>
@@ -860,13 +994,13 @@ export default function Sentinel() {
             <div style={{...S.card,marginBottom:16,borderColor: cuToken?"#166534":"#334155"}}>
               <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12}}>
                 <span style={{fontSize:20}}>🎯</span>
-                <div><div style={{fontSize:13,fontWeight:700,color:"#e2e8f0"}}>ClickUp — Live Connection</div><div style={{fontSize:11,color:"#64748b"}}>{cuTasks.length>0?`${cuTasks.length} ${t.tasksLoaded}`:lang==="es"?"Configurá tu token y List ID":"Configure your token and List ID"}</div></div>
+                <div><div style={{fontSize:13,fontWeight:700,color:"#e2e8f0"}}>ClickUp — Live Connection</div><div style={{fontSize:11,color:"#64748b"}}>{cuTasks.length>0?`${cuTasks.length} ${t.tasksLoaded}`:t.configureClickup}</div></div>
                 {cuToken&&<div style={{marginLeft:"auto",width:8,height:8,borderRadius:"50%",background:"#10b981"}}/>}
               </div>
               <div style={{display:"flex",flexDirection:"column",gap:8}}>
                 <div>
                   <label style={S.label}>API Token (pk_...)</label>
-                  <input style={S.input} type="password" placeholder="pk_72869169_..." value={cuToken} onChange={e=>{setCuToken(e.target.value);localStorage.setItem("sentinel_cu_token",e.target.value);}} onBlur={()=>{if(cuToken)loadSpaces();}}/>
+                  <input style={S.input} type="password" placeholder="pk_72869169_..." value={cuToken} onChange={e=>{const v=e.target.value;setCuToken(v);localStorage.setItem("sentinel_cu_token",v);if(DB_ENABLED)dbSaveConfig("cu_token",v).catch(console.error);}} onBlur={()=>{if(cuToken)loadSpaces();}}/>
                 </div>
                 <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
                   <div>
@@ -878,14 +1012,14 @@ export default function Sentinel() {
                   </div>
                   <div>
                     <label style={S.label}>List ID</label>
-                    <select style={S.select} value={cuListId} onChange={e=>{setCuListId(e.target.value);localStorage.setItem("sentinel_cu_list",e.target.value);}}>
+                    <select style={S.select} value={cuListId} onChange={e=>{const v=e.target.value;setCuListId(v);localStorage.setItem("sentinel_cu_list",v);if(DB_ENABLED)dbSaveConfig("cu_list",v).catch(console.error);}}>
                       <option value="">— Select List —</option>
                       {cuLists.map(l=><option key={l.id} value={l.id}>{l.name}</option>)}
                     </select>
                   </div>
                 </div>
                 <div style={{display:"flex",gap:8}}>
-                  <button onClick={()=>loadSpaces()} style={S.smBtn}><I.Refresh/> {lang==="es"?"Cargar Spaces":"Load Spaces"}</button>
+                  <button onClick={()=>loadSpaces()} style={S.smBtn}><I.Refresh/> {t.loadSpaces}</button>
                   <button onClick={syncClickUp} disabled={cuSyncing||!cuToken||!cuListId} style={{...S.smBtn,borderColor:"#7c3aed",color:"#a78bfa"}}>
                     {cuSyncing?<><Dots/> {t.syncing}</>:<><I.Refresh/> {t.syncTasks}</>}
                   </button>
@@ -921,7 +1055,7 @@ export default function Sentinel() {
                 <div key={doc.id} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 0",borderBottom:"1px solid #1e293b"}}>
                   <span style={{background:{pdf:"#ef4444",csv:"#10b981",text:"#6366f1",url:"#f59e0b",clickup:"#7c3aed"}[doc.source]||{pdf:"#ef4444",csv:"#10b981",text:"#6366f1",url:"#f59e0b"}[doc.type]||"#8b5cf6",color:"white",fontSize:9,fontWeight:800,padding:"2px 5px",borderRadius:3}}>{doc.source==="clickup"?"CU":doc.type?.toUpperCase()}</span>
                   <div style={{flex:1}}><div style={{fontSize:12,fontWeight:600,color:"#e2e8f0"}}>{doc.name}</div><div style={{fontSize:10,color:"#475569"}}>{doc.source} · {doc.uploadedAt} · {doc.content?.length?.toLocaleString()} chars</div></div>
-                  <button onClick={()=>setProjects(p=>({...p,[pid]:{...p[pid],docs:p[pid].docs.filter(d=>d.id!==doc.id)}}))} style={S.iconBtn}><I.Trash/></button>
+                  <button onClick={()=>{setProjects(p=>({...p,[pid]:{...p[pid],docs:p[pid].docs.filter(d=>d.id!==doc.id)}}));if(DB_ENABLED)dbDeleteDoc(String(doc.id)).catch(console.error);}} style={S.iconBtn}><I.Trash/></button>
                 </div>
               ))}
               {!(project?.docs?.length)&&<div style={{padding:"20px 0",textAlign:"center",color:"#475569",fontSize:12}}>{t.noDocsYet}</div>}
@@ -941,8 +1075,8 @@ export default function Sentinel() {
                   <div style={{fontSize:14,color:"#e2e8f0",marginBottom:6}}>{selectedTkt.summary}</div>
                   <div style={{fontSize:11,color:"#475569"}}>{new Date(selectedTkt.createdAt).toLocaleString()} · {selectedTkt.projectName}</div>
                   <div style={{display:"flex",gap:8,marginTop:12}}>
-                    <button onClick={()=>{const waNum=localStorage.getItem("sentinel_wa");if(waNum){const msg=encodeURIComponent(`🚨 Ticket ${selectedTkt.id}\nProject: ${selectedTkt.projectName}\nIssue: ${selectedTkt.summary}`);window.open(`https://wa.me/${waNum.replace(/\D/g,"")}?text=${msg}`,"_blank");}else alert("Configure WhatsApp in Admin → Integrations");}} style={{...S.smBtn,borderColor:"#25d366",color:"#25d366"}}>{t.notifyWhatsapp}</button>
-                    <button onClick={()=>alert("Configure EmailJS in Admin → Integrations")} style={{...S.smBtn,borderColor:"#818cf8",color:"#818cf8"}}>{t.notifyEmail}</button>
+                    <button onClick={()=>{const waNum=localStorage.getItem("sentinel_wa");if(waNum){const msg=encodeURIComponent(`🚨 Ticket ${selectedTkt.id}\nProject: ${selectedTkt.projectName}\nIssue: ${selectedTkt.summary}`);window.open(`https://wa.me/${waNum.replace(/\D/g,"")}?text=${msg}`,"_blank");}else alert(t.configureWhatsapp);}} style={{...S.smBtn,borderColor:"#25d366",color:"#25d366"}}>{t.notifyWhatsapp}</button>
+                    <button onClick={()=>alert(t.configureEmail)} style={{...S.smBtn,borderColor:"#818cf8",color:"#818cf8"}}>{t.notifyEmail}</button>
                   </div>
                 </div>
                 <div style={{...S.card,marginTop:10}}>
@@ -991,7 +1125,7 @@ export default function Sentinel() {
               <div style={S.card}>
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
                   <div style={S.sectionTitle}>{t.projectsTitle} ({Object.keys(projects).length})</div>
-                  <button onClick={()=>setShowNewProj(true)} style={{...S.smBtn,borderColor:"#4f46e5",color:"#818cf8"}}><I.Plus/> {lang==="es"?"Nuevo":"New"}</button>
+                  <button onClick={()=>setShowNewProj(true)} style={{...S.smBtn,borderColor:"#4f46e5",color:"#818cf8"}}><I.Plus/> {t.newProject}</button>
                 </div>
                 {Object.values(projects).map(p=>(
                   <div key={p.id} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 0",borderBottom:"1px solid #1e293b"}}>
@@ -999,6 +1133,7 @@ export default function Sentinel() {
                     <div style={{flex:1}}><div style={{fontSize:13,fontWeight:600,color:"#e2e8f0"}}>{p.name}</div><div style={{fontSize:11,color:"#475569"}}>{p.client} · {p.docs?.length||0} docs · <span style={{color:p.health>=80?"#10b981":p.health>=60?"#f59e0b":"#ef4444"}}>{p.health}%</span></div></div>
                     <StatusBadge status={p.status} t={t}/>
                     <button onClick={()=>{setActive(p.id);setView("data");}} style={S.smBtn}>{t.manageBtn}</button>
+                    <button onClick={()=>deleteProject(p.id)} style={{...S.iconBtn,color:"#ef4444"}} title={t.deleteProject}><I.Trash/></button>
                   </div>
                 ))}
               </div>
