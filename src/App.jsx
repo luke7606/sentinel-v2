@@ -658,13 +658,25 @@ export default function Sentinel() {
     finally{setKeyTesting(false);}
   };
 
-  const login=(e)=>{
+  const login=async(e)=>{
     e.preventDefault();
     const u=USERS[loginForm.u.toLowerCase()];
     if(u&&u.password===loginForm.p){
       setUser(u);if(u.projectId)setActive(u.projectId);setView("dashboard");
+      const activePid=u.projectId||activeProject;
       let w=u.role==="admin"?t.welcomeAdmin(u.name,Object.keys(projects).length):u.role==="client"?t.welcomeClient(u.name):t.welcomeInternal(u.name,getAreaLabel(u.area));
-      setMessages([{role:"assistant",content:w}]);
+      // Try to load last conversation from Supabase
+      if(DB_ENABLED){
+        try{
+          const saved=await dbLoadConfig(`chat_${activePid}`);
+          if(saved){
+            const parsed=JSON.parse(saved);
+            if(Array.isArray(parsed)&&parsed.length>0){
+              setMessages([{role:"assistant",content:w},...parsed]);
+            } else { setMessages([{role:"assistant",content:w}]); }
+          } else { setMessages([{role:"assistant",content:w}]); }
+        } catch { setMessages([{role:"assistant",content:w}]); }
+      } else { setMessages([{role:"assistant",content:w}]); }
     }else{setLoginErr(t.wrongCredentials);}
   };
 
@@ -697,11 +709,24 @@ export default function Sentinel() {
 
   const buildSystem=useCallback(()=>{
     const proj=projects[pid];
-    const docs=proj?.docs?.length?proj.docs.slice(0,3).map(d=>`=== ${d.name} ===\n${d.content.slice(0,600)}`).join("\n\n"):null;
+    // Include ALL docs from active project, up to 2000 chars each
+    const projDocs=proj?.docs?.length
+      ? proj.docs.map(d=>`=== ${d.name} (${d.type}) ===\n${d.content.slice(0,2000)}`).join("\n\n")
+      : null;
+    // For admin: also include a summary of docs from all other projects
+    const allProjectsDocs=user?.role==="admin"
+      ? Object.values(projects)
+          .filter(p=>p.id!==pid)
+          .flatMap(p=>(p.docs||[]).map(d=>`[${p.name}] ${d.name}: ${d.content.slice(0,400)}`))
+          .join("\n")
+      : null;
+    const docs=[projDocs, allProjectsDocs&&`=== OTHER PROJECTS DOCS ===\n${allProjectsDocs}`]
+      .filter(Boolean).join("\n\n") || null;
+
     if(!user)return"You are Sentinel AI.";
     if(user.role==="client")return t.sysClient(proj?.name,user.name,docs);
-    if(user.role==="admin"){const allP=Object.values(projects).map(p=>`- ${p.name} (${p.client}): health ${p.health}%, status ${p.status}`).join("\n");return t.sysAdmin(allP,docs);}
-    return(t.sysInternal[user.area]||"You are Sentinel AI.")+(docs?`\nCONTEXT:\n${docs}`:"");
+    if(user.role==="admin"){const allP=Object.values(projects).map(p=>`- ${p.name} (${p.client}): health ${p.health}%, status ${p.status}, docs: ${p.docs?.length||0}`).join("\n");return t.sysAdmin(allP,docs);}
+    return(t.sysInternal[user.area]||"You are Sentinel AI.")+(docs?`\nCONTEXT DOCS:\n${docs}`:"");
   },[projects,pid,user,t]);
 
   const send=async()=>{
@@ -716,7 +741,21 @@ export default function Sentinel() {
         const tkt=makeTicket(summary,newMsgs);
         setMessages(p=>[...p,{role:"assistant",content:`⚠️ **${lang==="es"?"Caso escalado al equipo N2":"Case escalated to N2"}**\n\n${summary}\n\nTicket: **${tkt.id}**`,escalated:true}]);
         setEscalated(true);
-      }else{setMessages(p=>[...p,{role:"assistant",content:reply}]);}
+      } else {
+        // Auto-detect ticket creation from chat and save it
+        const ticketMatch = reply.match(/Ticket ID[:\s]+([A-Z0-9\-]+)/i);
+        if(ticketMatch && /create.*ticket|ticket.*create|nuevo ticket/i.test(msg)){
+          const tkt=makeTicket(msg, newMsgs);
+          setMessages(p=>[...p,{role:"assistant",content:reply+`\n\n✅ Ticket **${tkt.id}** saved to project.`}]);
+        } else {
+          setMessages(p=>[...p,{role:"assistant",content:reply}]);
+        }
+      }
+      // Save conversation to Supabase after each exchange
+      if(DB_ENABLED){
+        const convToSave=[...newMsgs,{role:"assistant",content:reply}].slice(-20);
+        dbSaveConfig(`chat_${pid}`,JSON.stringify(convToSave)).catch(console.error);
+      }
     }catch(err){setMessages(p=>[...p,{role:"assistant",content:`❌ Error: ${err.message}`,error:true}]);}
     finally{setLoading(false);inputRef.current?.focus();}
   };
@@ -755,7 +794,13 @@ export default function Sentinel() {
       if(DB_ENABLED) dbSaveDoc(doc,pid).catch(console.error);
     }
   };
-  const addUrl=()=>{if(!urlInput.trim())return;const doc={id:Date.now(),name:urlInput,type:"url",source:"url",content:`[URL: ${urlInput}]`,uploadedAt:new Date().toISOString().split("T")[0]};setProjects(p=>({...p,[pid]:{...p[pid],docs:[...(p[pid]?.docs||[]),doc]}}));setUrlInput("");};
+  const addUrl=()=>{
+    if(!urlInput.trim())return;
+    const doc={id:String(Date.now()),name:urlInput,type:"url",source:"url",content:`[URL: ${urlInput}]\nThis is a linked resource. When asked about this URL, refer to it by name and suggest the user check it directly.`,uploadedAt:new Date().toISOString().split("T")[0]};
+    setProjects(p=>({...p,[pid]:{...p[pid],docs:[...(p[pid]?.docs||[]),doc]}}));
+    if(DB_ENABLED) dbSaveDoc(doc,pid).catch(console.error);
+    setUrlInput("");
+  };
   const addScript=()=>{if(!scriptTxt.trim())return;const doc={id:String(Date.now()),name:lang==="es"?"Entrada Manual":"Manual Entry",type:"text",source:"manual",content:scriptTxt,uploadedAt:new Date().toISOString().split("T")[0]};setProjects(p=>({...p,[pid]:{...p[pid],docs:[...(p[pid]?.docs||[]),doc]}}));if(DB_ENABLED)dbSaveDoc(doc,pid).catch(console.error);setScriptTxt("");};
   // DB-aware project updater
   const saveProject = (proj) => {
