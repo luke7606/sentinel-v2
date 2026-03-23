@@ -620,8 +620,7 @@ function SlackConnector({pid, projects, setProjects, groqKey, lang, t, dbSaveDoc
           const user = m.username || m.user || "user";
           return `[${time}] ${user}: ${m.text}`;
         })
-        .join("
-");
+        .join("\n");
 
       const doc = {
         id: `slack-${channelId}-${Date.now()}`,
