@@ -582,6 +582,104 @@ function NewProjectModal({t,lang,onClose,onCreate}) {
   );
 }
 
+
+// ── SLACK CONNECTOR ──────────────────────────────────────────
+function SlackConnector({pid, projects, setProjects, groqKey, lang, t, dbSaveDoc, DB_ENABLED, S, I}) {
+  const LS_SLACK = "sentinel_slack_tokens";
+  const getSaved = () => { try { return JSON.parse(localStorage.getItem(LS_SLACK)||"{}"); } catch { return {}; } };
+  const [slackToken, setSlackToken] = useState(() => getSaved()[pid]?.token || "");
+  const [channelId,  setChannelId]  = useState(() => getSaved()[pid]?.channel || "");
+  const [syncing,    setSyncing]    = useState(false);
+  const [lastSync,   setLastSync]   = useState(null);
+  const [msgCount,   setMsgCount]   = useState(0);
+
+  const saveCredentials = (token, channel) => {
+    const all = getSaved();
+    all[pid] = { token, channel };
+    localStorage.setItem(LS_SLACK, JSON.stringify(all));
+  };
+
+  const syncSlack = async () => {
+    if (!slackToken || !channelId) { alert("Enter Slack Bot Token and Channel ID first"); return; }
+    setSyncing(true);
+    try {
+      // Fetch messages from Slack API via proxy-less approach
+      const r = await fetch(`https://slack.com/api/conversations.history?channel=${channelId}&limit=50`, {
+        headers: { "Authorization": `Bearer ${slackToken}` }
+      });
+      const data = await r.json();
+      if (!data.ok) throw new Error(data.error || "Slack API error");
+      
+      const messages = data.messages || [];
+      // Format messages as readable content
+      const formatted = messages
+        .filter(m => m.type === "message" && m.text)
+        .reverse()
+        .map(m => {
+          const time = new Date(parseFloat(m.ts) * 1000).toLocaleString();
+          const user = m.username || m.user || "user";
+          return `[${time}] ${user}: ${m.text}`;
+        })
+        .join("
+");
+
+      const doc = {
+        id: `slack-${channelId}-${Date.now()}`,
+        name: `Slack #${channelId} — ${messages.length} messages`,
+        type: "text",
+        source: "slack",
+        content: `SLACK CHANNEL: ${channelId}
+Synced: ${new Date().toLocaleString()}
+
+${formatted}`,
+        uploadedAt: new Date().toISOString().split("T")[0]
+      };
+
+      setProjects(p => ({...p, [pid]: {...p[pid], docs: [...(p[pid]?.docs||[]).filter(d=>d.source!=="slack"||d.name!==doc.name), doc]}}));
+      if (DB_ENABLED) dbSaveDoc(doc, pid).catch(console.error);
+      setLastSync(new Date());
+      setMsgCount(messages.length);
+    } catch(err) {
+      alert(`Slack error: ${err.message}. Make sure CORS is enabled or use a proxy.`);
+    } finally { setSyncing(false); }
+  };
+
+  const connected = !!slackToken && !!channelId;
+
+  return (
+    <div style={{...S.card, marginBottom:16, borderColor: connected ? "#1d4ed8" : "#334155"}}>
+      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12}}>
+        <span style={{fontSize:20}}>💬</span>
+        <div>
+          <div style={{fontSize:13,fontWeight:700,color:"#e2e8f0"}}>Slack — Live Connection</div>
+          <div style={{fontSize:11,color:"#64748b"}}>{lastSync ? `${msgCount} messages · synced ${lastSync.toLocaleTimeString()}` : "Connect to read channel messages"}</div>
+        </div>
+        {connected && <div style={{marginLeft:"auto",width:8,height:8,borderRadius:"50%",background:"#3b82f6"}}/>}
+      </div>
+      <div style={{display:"flex",flexDirection:"column",gap:8}}>
+        <div>
+          <label style={S.label}>Bot Token (xoxb-...)</label>
+          <input style={S.input} type="password" placeholder="xoxb-..." value={slackToken}
+            onChange={e => { setSlackToken(e.target.value); saveCredentials(e.target.value, channelId); }}/>
+        </div>
+        <div>
+          <label style={S.label}>Channel ID (C0XXXXXXX)</label>
+          <input style={S.input} placeholder="C0AMR75UX97" value={channelId}
+            onChange={e => { setChannelId(e.target.value); saveCredentials(slackToken, e.target.value); }}/>
+        </div>
+        <div style={{fontSize:10,color:"#475569"}}>
+          Get token: api.slack.com → Your Apps → Bot Token Scopes: channels:history, channels:read
+        </div>
+        <button onClick={syncSlack} disabled={syncing || !slackToken || !channelId}
+          style={{...S.smBtn, borderColor:"#3b82f6", color:"#60a5fa"}}>
+          {syncing ? <><Dots/> Syncing...</> : <><I.Refresh/> Sync Messages</>}
+        </button>
+        {lastSync && <div style={{fontSize:11,color:"#3b82f6"}}>✓ {msgCount} messages indexed</div>}
+      </div>
+    </div>
+  );
+}
+
 // ════════════════════════════════════════════════════════════
 export default function Sentinel() {
   const [lang, setLangState]          = useState("en");
@@ -761,11 +859,9 @@ export default function Sentinel() {
           setMessages(p=>[...p,{role:"assistant",content:reply}]);
         }
       }
-      // Save conversation to Supabase after each exchange
-      if(DB_ENABLED){
-        const convToSave=[...newMsgs,{role:"assistant",content:reply}].slice(-20);
-        dbSaveConfig(`chat_${pid}`,JSON.stringify(convToSave)).catch(console.error);
-      }
+      // Save conversation to localStorage after each exchange
+      const convToSave=[...newMsgs,{role:"assistant",content:reply}].slice(-30);
+      dbSaveConfig(`chat_${pid}`,JSON.stringify(convToSave)).catch(console.error);
     }catch(err){setMessages(p=>[...p,{role:"assistant",content:`❌ Error: ${err.message}`,error:true}]);}
     finally{setLoading(false);inputRef.current?.focus();}
   };
@@ -1083,9 +1179,12 @@ export default function Sentinel() {
               </div>
             </div>
 
+            {/* Slack Integration */}
+            <SlackConnector pid={pid} projects={projects} setProjects={setProjects} groqKey={groqKey} lang={lang} t={t} dbSaveDoc={dbSaveDoc} DB_ENABLED={DB_ENABLED} S={S} I={I} />
+
             {/* Other integrations */}
             <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(150px,1fr))",gap:8,marginBottom:20}}>
-              {[{name:"GitLab",icon:"🦊",color:"#fc6d26",desc:"Repos & issues"},{name:"GitHub",icon:"⚫",color:"#6e40c9",desc:"Code & PRs"},{name:"Slack",icon:"💬",color:"#4a154b",desc:"Messages"},{name:"Notion",icon:"📖",color:"#1976d2",desc:"Docs & wikis"},{name:"Jira",icon:"🔵",status:"soon",color:"#0052cc",desc:"Coming soon"}].map(tool=>(
+              {[{name:"GitLab",icon:"🦊",color:"#fc6d26",desc:"Repos & issues"},{name:"GitHub",icon:"⚫",color:"#6e40c9",desc:"Code & PRs"},{name:"Notion",icon:"📖",color:"#1976d2",desc:"Docs & wikis"},{name:"Jira",icon:"🔵",status:"soon",color:"#0052cc",desc:"Coming soon"}].map(tool=>(
                 <div key={tool.name} style={{background:"#1e293b",border:"1px solid #334155",borderRadius:10,padding:"12px",textAlign:"center"}}>
                   <div style={{fontSize:22,marginBottom:4}}>{tool.icon}</div>
                   <div style={{fontSize:12,fontWeight:700,color:"#e2e8f0"}}>{tool.name}</div>
