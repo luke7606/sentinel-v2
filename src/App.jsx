@@ -771,7 +771,7 @@ export default function Sentinel() {
     const u=USERS[loginForm.u.toLowerCase()];
     if(u&&u.password===loginForm.p){
       setUser(u);if(u.projectId)setActive(u.projectId);setView("dashboard");
-      const activePid=u.projectId||activeProject;
+      const activePid=u.projectId||localStorage.getItem("sentinel_last_pid")||activeProject;
       let w=u.role==="admin"?t.welcomeAdmin(u.name,Object.keys(projects).length):u.role==="client"?t.welcomeClient(u.name):t.welcomeInternal(u.name,getAreaLabel(u.area));
       // Try to load last conversation from Supabase
       if(DB_ENABLED){
@@ -780,7 +780,9 @@ export default function Sentinel() {
           if(saved){
             const parsed=JSON.parse(saved);
             if(Array.isArray(parsed)&&parsed.length>0){
-              setMessages([{role:"assistant",content:w},...parsed]);
+              // Show welcome + last 10 messages of previous session
+              const recent=parsed.slice(-10);
+              setMessages([{role:"assistant",content:w},{role:"assistant",content:`📂 _Retomando conversación anterior (${recent.length} mensajes)_`},...recent]);
             } else { setMessages([{role:"assistant",content:w}]); }
           } else { setMessages([{role:"assistant",content:w}]); }
         } catch { setMessages([{role:"assistant",content:w}]); }
@@ -1019,7 +1021,7 @@ export default function Sentinel() {
               <span>{t.activeProject}</span>
               {user.role==="admin"&&<button onClick={()=>setShowNewProj(true)} style={{...S.iconBtn,color:"#818cf8"}}><I.Plus/></button>}
             </div>
-            <select value={activeProject} onChange={e=>setActive(e.target.value)} style={S.select}>
+            <select value={activeProject} onChange={e=>{setActive(e.target.value);localStorage.setItem("sentinel_last_pid",e.target.value);}} style={S.select}>
               {Object.values(projects).map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
             </select>
           </div>
@@ -1139,7 +1141,7 @@ export default function Sentinel() {
         {view==="data"&&user.role!=="client"&&(
           <div style={S.panel}>
             <div style={{marginBottom:18}}><h2 style={S.panelH}>{t.dataSourcesTitle}</h2><p style={S.panelSub}>{t.dataSourcesSub}</p></div>
-            {user.role==="admin"&&<div style={{display:"flex",gap:8,alignItems:"center",marginBottom:16}}><span style={S.label}>{t.projectLabel}</span><select value={activeProject} onChange={e=>setActive(e.target.value)} style={S.select}>{Object.values(projects).map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></div>}
+            {user.role==="admin"&&<div style={{display:"flex",gap:8,alignItems:"center",marginBottom:16}}><span style={S.label}>{t.projectLabel}</span><select value={activeProject} onChange={e=>{setActive(e.target.value);localStorage.setItem("sentinel_last_pid",e.target.value);}} style={S.select}>{Object.values(projects).map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></div>}
 
             {/* ClickUp real connector */}
             <div style={{...S.card,marginBottom:16,borderColor: cuToken?"#166534":"#334155"}}>
