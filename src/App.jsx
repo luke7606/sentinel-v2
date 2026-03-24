@@ -67,7 +67,7 @@ async function callGroq({ apiKey, system, messages, maxTokens = 700 }) {
     headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKey}` },
     body: JSON.stringify({
       model: "llama-3.3-70b-versatile", max_tokens: maxTokens, temperature: 0.4,
-      messages: [{ role: "system", content: system }, ...messages.slice(-3)],
+      messages: [{ role: "system", content: system }, ...messages.slice(-20)],
     }),
   });
   const d = await r.json();
@@ -769,20 +769,41 @@ export default function Sentinel() {
       setUser(u);if(u.projectId)setActive(u.projectId);setView("dashboard");
       const activePid=u.projectId||localStorage.getItem("sentinel_last_pid")||activeProject;
       let w=u.role==="admin"?t.welcomeAdmin(u.name,Object.keys(projects).length):u.role==="client"?t.welcomeClient(u.name):t.welcomeInternal(u.name,getAreaLabel(u.area));
-      // Try to load last conversation from Supabase
+
+      // Cargar historial previo
+      let prevMsgs=[];
       if(DB_ENABLED){
         try{
           const saved=await dbLoadConfig(`chat_${activePid}`);
-          if(saved){
-            const parsed=JSON.parse(saved);
-            if(Array.isArray(parsed)&&parsed.length>0){
-              // Show welcome + last 10 messages of previous session
-              const recent=parsed.slice(-10);
-              setMessages([{role:"assistant",content:w},{role:"assistant",content:`📂 _Retomando conversación anterior (${recent.length} mensajes)_`},...recent]);
-            } else { setMessages([{role:"assistant",content:w}]); }
-          } else { setMessages([{role:"assistant",content:w}]); }
-        } catch { setMessages([{role:"assistant",content:w}]); }
-      } else { setMessages([{role:"assistant",content:w}]); }
+          if(saved){ const parsed=JSON.parse(saved); if(Array.isArray(parsed)&&parsed.length>0) prevMsgs=parsed.slice(-20); }
+        }catch{}
+      }
+      // También chequear localStorage directo
+      if(prevMsgs.length===0){
+        try{
+          const lsRaw=localStorage.getItem(`sentinel_chat_${activePid}_${u.id}`);
+          if(lsRaw){ const parsed=JSON.parse(lsRaw); if(Array.isArray(parsed)&&parsed.length>0) prevMsgs=parsed.slice(-20); }
+        }catch{}
+      }
+
+      if(prevMsgs.length>0&&groqKey){
+        // Hay historial — pedir a la AI un briefing proactivo de lo que pasó
+        setMessages([{role:"assistant",content:w},{role:"assistant",content:`⏳ _Analizando tu historial y las integraciones conectadas..._`}]);
+        try{
+          const proj=projects[activePid];
+          const clickupDoc=proj?.docs?.find(d=>d.source==="clickup");
+          const slackDoc=proj?.docs?.find(d=>d.source==="slack");
+          const intCtx=[clickupDoc&&`ClickUp: ${clickupDoc.content.slice(0,800)}`,slackDoc&&`Slack: ${slackDoc.content.slice(0,800)}`].filter(Boolean).join("\n");
+          const histText=prevMsgs.slice(-10).map(m=>`${m.role==="user"?"USER":"SENTINEL"}: ${m.content.slice(0,200)}`).join("\n");
+          const briefingPrompt=`El usuario ${u.name} (${u.role}) acaba de iniciar sesión. Basándote en el historial de conversación anterior y los datos de integraciones, generá un briefing ejecutivo breve (máximo 4 puntos) que responda: ¿Qué se habló/decidió la última vez? ¿Hay algo nuevo en las apps conectadas que deba saber? ¿Hay riesgos o cambios pendientes?\n\nHISTORIAL PREVIO:\n${histText}\n\nINTEGRACIONES ACTUALES:\n${intCtx||"No hay integraciones sincronizadas aún."}\n\nProyecto activo: ${proj?.name||activePid} | Health: ${proj?.health||"?"}% | Status: ${proj?.status||"?"}`;
+          const briefing=await callGroq({apiKey:groqKey,system:`Sos Sentinel, un cerebro de gestión ejecutivo. Respondé en el mismo idioma que se usó en el historial previo (español o inglés). Sé conciso y directo. Usá **negrita** para destacar lo importante.`,messages:[{role:"user",content:briefingPrompt}],maxTokens:500});
+          setMessages([{role:"assistant",content:w},{role:"assistant",content:`🧠 **Briefing de tu última sesión:**\n\n${briefing}`},...prevMsgs.slice(-6)]);
+        }catch{
+          setMessages([{role:"assistant",content:w},{role:"assistant",content:`📂 _Retomando conversación anterior (${prevMsgs.length} mensajes guardados)_`},...prevMsgs.slice(-6)]);
+        }
+      } else {
+        setMessages([{role:"assistant",content:w}]);
+      }
     }else{setLoginErr(t.wrongCredentials);}
   };
 
@@ -815,25 +836,68 @@ export default function Sentinel() {
 
   const buildSystem=useCallback(()=>{
     const proj=projects[pid];
-    // Include ALL docs from active project, up to 2000 chars each
+    const today=new Date().toLocaleString();
+
+    // ── DOCS DEL PROYECTO ACTIVO ──────────────────────────────
     const projDocs=proj?.docs?.length
-      ? proj.docs.map(d=>`=== ${d.name} (${d.type}) ===\n${d.content.slice(0,2000)}`).join("\n\n")
+      ? proj.docs.map(d=>`=== ${d.name} [${d.source||d.type}] ===\n${d.content.slice(0,2500)}`).join("\n\n")
       : null;
-    // For admin: also include a summary of docs from all other projects
+
+    // ── DOCS DE OTROS PROYECTOS (admin) ───────────────────────
     const allProjectsDocs=user?.role==="admin"
       ? Object.values(projects)
           .filter(p=>p.id!==pid)
-          .flatMap(p=>(p.docs||[]).map(d=>`[${p.name}] ${d.name}: ${d.content.slice(0,400)}`))
+          .flatMap(p=>(p.docs||[]).map(d=>`[${p.name}] ${d.name} (${d.source||d.type}): ${d.content.slice(0,500)}`))
           .join("\n")
       : null;
-    const docs=[projDocs, allProjectsDocs&&`=== OTHER PROJECTS DOCS ===\n${allProjectsDocs}`]
-      .filter(Boolean).join("\n\n") || null;
+
+    // ── INTEGRACIONES CONECTADAS ──────────────────────────────
+    const integrations=[];
+    const clickupDoc=proj?.docs?.find(d=>d.source==="clickup");
+    const slackDoc=proj?.docs?.find(d=>d.source==="slack");
+    if(clickupDoc) integrations.push(`CLICKUP (sincronizado): ${clickupDoc.content.slice(0,1500)}`);
+    if(slackDoc)   integrations.push(`SLACK (sincronizado): ${slackDoc.content.slice(0,1500)}`);
+    if(cuTasks.length>0&&!clickupDoc){
+      const tasksSummary=cuTasks.slice(0,20).map(tk=>`[${tk.status?.status?.toUpperCase()}] ${tk.name} | Due:${tk.due_date?new Date(parseInt(tk.due_date)).toLocaleDateString():"?"} | ${tk.assignees?.[0]?.username||"?"}`).join("\n");
+      integrations.push(`CLICKUP TASKS (en memoria):\n${tasksSummary}`);
+    }
+
+    // ── HISTORIAL DE SESIONES PREVIAS ─────────────────────────
+    let sessionMemory=null;
+    try{
+      const savedRaw=localStorage.getItem(`sentinel_chat_${pid}_${user?.id}`);
+      if(savedRaw){
+        const savedMsgs=JSON.parse(savedRaw);
+        if(Array.isArray(savedMsgs)&&savedMsgs.length>0){
+          // Resumen de las últimas sesiones para contexto de la AI
+          const historyText=savedMsgs.slice(-15).map(m=>`${m.role==="user"?"USER":"SENTINEL"}: ${m.content.slice(0,300)}`).join("\n");
+          sessionMemory=`=== HISTORIAL DE SESIONES PREVIAS (último contexto) ===\n${historyText}\n=== FIN HISTORIAL ===`;
+        }
+      }
+    }catch{}
+
+    // ── ESTADO DEL PROYECTO ───────────────────────────────────
+    const projStatus=proj?`Proyecto activo: ${proj.name} | Cliente: ${proj.client} | Salud: ${proj.health}% | Estado: ${proj.status} | Tickets abiertos: ${(proj.tickets||[]).filter(tk=>tk.status==="open").length}`:null;
+
+    // ── ENSAMBLAR CONTEXTO COMPLETO ───────────────────────────
+    const contextParts=[
+      projStatus,
+      projDocs,
+      allProjectsDocs&&`=== OTROS PROYECTOS ===\n${allProjectsDocs}`,
+      integrations.length>0&&`=== INTEGRACIONES CONECTADAS ===\n${integrations.join("\n\n")}`,
+      sessionMemory,
+    ].filter(Boolean).join("\n\n") || null;
+
+    const metaInstructions=`\nFecha actual: ${today}.\nSOS UN CEREBRO DE GESTIÓN 360. Cuando respondas, considerá TODO el contexto disponible: historial de conversaciones previas, datos de ClickUp, mensajes de Slack, documentos del proyecto. Si el usuario pregunta por algo que se discutió antes, hacé referencia a eso explícitamente. Si hay cambios en las integraciones respecto a lo que se habló, mencionálos proactivamente. Nunca digas que no tenés memoria — tenés todo el contexto de arriba.`;
 
     if(!user)return"You are Sentinel AI.";
-    if(user.role==="client")return t.sysClient(proj?.name,user.name,docs);
-    if(user.role==="admin"){const allP=Object.values(projects).map(p=>`- ${p.name} (${p.client}): health ${p.health}%, status ${p.status}, docs: ${p.docs?.length||0}`).join("\n");return t.sysAdmin(allP,docs);}
-    return(t.sysInternal[user.area]||"You are Sentinel AI.")+(docs?`\nCONTEXT DOCS:\n${docs}`:"");
-  },[projects,pid,user,t]);
+    if(user.role==="client")return t.sysClient(proj?.name,user.name,contextParts)+metaInstructions;
+    if(user.role==="admin"){
+      const allP=Object.values(projects).map(p=>`- ${p.name} (${p.client}): health ${p.health}%, status ${p.status}, docs: ${p.docs?.length||0}, tickets abiertos: ${(p.tickets||[]).filter(tk=>tk.status==="open").length}`).join("\n");
+      return t.sysAdmin(allP,contextParts)+metaInstructions;
+    }
+    return(t.sysInternal[user.area]||"You are Sentinel AI.")+(contextParts?`\nCONTEXT:\n${contextParts}`:"")+metaInstructions;
+  },[projects,pid,user,t,cuTasks]);
 
   const send=async()=>{
     if(!input.trim()||loading||escalated)return;
@@ -857,9 +921,11 @@ export default function Sentinel() {
           setMessages(p=>[...p,{role:"assistant",content:reply}]);
         }
       }
-      // Save conversation to localStorage after each exchange
+      // Guardar conversación por usuario+proyecto para memoria persistente
       const convToSave=[...newMsgs,{role:"assistant",content:reply}].slice(-30);
       dbSaveConfig(`chat_${pid}`,JSON.stringify(convToSave)).catch(console.error);
+      // También guardar con clave usuario-específica para el buildSystem
+      try{ localStorage.setItem(`sentinel_chat_${pid}_${user?.id}`,JSON.stringify(convToSave)); }catch{}
     }catch(err){setMessages(p=>[...p,{role:"assistant",content:`❌ Error: ${err.message}`,error:true}]);}
     finally{setLoading(false);inputRef.current?.focus();}
   };
