@@ -770,11 +770,11 @@ export default function Sentinel() {
       const activePid=u.projectId||localStorage.getItem("sentinel_last_pid")||activeProject;
       let w=u.role==="admin"?t.welcomeAdmin(u.name,Object.keys(projects).length):u.role==="client"?t.welcomeClient(u.name):t.welcomeInternal(u.name,getAreaLabel(u.area));
 
-      // Cargar historial previo
+      // Cargar historial previo — privado por usuario
       let prevMsgs=[];
       if(DB_ENABLED){
         try{
-          const saved=await dbLoadConfig(`chat_${activePid}`);
+          const saved=await dbLoadConfig(`chat_${activePid}_${u.id}`);
           if(saved){ const parsed=JSON.parse(saved); if(Array.isArray(parsed)&&parsed.length>0) prevMsgs=parsed.slice(-20); }
         }catch{}
       }
@@ -797,9 +797,9 @@ export default function Sentinel() {
           const histText=prevMsgs.slice(-10).map(m=>`${m.role==="user"?"USER":"SENTINEL"}: ${m.content.slice(0,200)}`).join("\n");
           const briefingPrompt=`El usuario ${u.name} (${u.role}) acaba de iniciar sesión. Basándote en el historial de conversación anterior y los datos de integraciones, generá un briefing ejecutivo breve (máximo 4 puntos) que responda: ¿Qué se habló/decidió la última vez? ¿Hay algo nuevo en las apps conectadas que deba saber? ¿Hay riesgos o cambios pendientes?\n\nHISTORIAL PREVIO:\n${histText}\n\nINTEGRACIONES ACTUALES:\n${intCtx||"No hay integraciones sincronizadas aún."}\n\nProyecto activo: ${proj?.name||activePid} | Health: ${proj?.health||"?"}% | Status: ${proj?.status||"?"}`;
           const briefing=await callGroq({apiKey:groqKey,system:`Sos Sentinel, un cerebro de gestión ejecutivo. Respondé en el mismo idioma que se usó en el historial previo (español o inglés). Sé conciso y directo. Usá **negrita** para destacar lo importante.`,messages:[{role:"user",content:briefingPrompt}],maxTokens:500});
-          setMessages([{role:"assistant",content:w},{role:"assistant",content:`🧠 **Briefing de tu última sesión:**\n\n${briefing}`},...prevMsgs.slice(-6)]);
+          setMessages([{role:"assistant",content:w},{role:"assistant",content:`🧠 **Briefing de tu última sesión:**\n\n${briefing}`}]);
         }catch{
-          setMessages([{role:"assistant",content:w},{role:"assistant",content:`📂 _Retomando conversación anterior (${prevMsgs.length} mensajes guardados)_`},...prevMsgs.slice(-6)]);
+          setMessages([{role:"assistant",content:w},{role:"assistant",content:`📂 _Retomando desde tu última sesión. Preguntame lo que necesités._`}]);
         }
       } else {
         setMessages([{role:"assistant",content:w}]);
@@ -921,10 +921,9 @@ export default function Sentinel() {
           setMessages(p=>[...p,{role:"assistant",content:reply}]);
         }
       }
-      // Guardar conversación por usuario+proyecto para memoria persistente
+      // Guardar conversación por usuario+proyecto — privado por usuario
       const convToSave=[...newMsgs,{role:"assistant",content:reply}].slice(-30);
-      dbSaveConfig(`chat_${pid}`,JSON.stringify(convToSave)).catch(console.error);
-      // También guardar con clave usuario-específica para el buildSystem
+      dbSaveConfig(`chat_${pid}_${user?.id}`,JSON.stringify(convToSave)).catch(console.error);
       try{ localStorage.setItem(`sentinel_chat_${pid}_${user?.id}`,JSON.stringify(convToSave)); }catch{}
     }catch(err){setMessages(p=>[...p,{role:"assistant",content:`❌ Error: ${err.message}`,error:true}]);}
     finally{setLoading(false);inputRef.current?.focus();}
