@@ -725,8 +725,8 @@ export default function Sentinel() {
     setDbSyncing(true);
     dbLoad().then(data=>{
       if(data&&Object.keys(data).length>0){
-        setProjects(data);
-        setActive(Object.keys(data)[0]);
+        const merged={...DEMO_PROJECTS,...data};setProjects(merged);
+        const realProjs=Object.values(data).filter(p=>!p.isDemo);if(realProjs.length>0)setActive(realProjs[0].id);else setActive(Object.keys(merged)[0]);
       }
       setDbLoaded(true);setDbSyncing(false);
     }).catch(()=>{setDbLoaded(true);setDbSyncing(false);});
@@ -796,8 +796,7 @@ export default function Sentinel() {
           const intCtx=[clickupDoc&&`ClickUp: ${clickupDoc.content.slice(0,800)}`,slackDoc&&`Slack: ${slackDoc.content.slice(0,800)}`].filter(Boolean).join("\n");
           const histText=prevMsgs.slice(-10).map(m=>`${m.role==="user"?"USER":"SENTINEL"}: ${m.content.slice(0,200)}`).join("\n");
           const briefingPrompt=`El usuario ${u.name} (${u.role}) acaba de iniciar sesión. Basándote en el historial de conversación anterior y los datos de integraciones, generá un briefing ejecutivo breve (máximo 4 puntos) que responda: ¿Qué se habló/decidió la última vez? ¿Hay algo nuevo en las apps conectadas que deba saber? ¿Hay riesgos o cambios pendientes?\n\nHISTORIAL PREVIO:\n${histText}\n\nINTEGRACIONES ACTUALES:\n${intCtx||"No hay integraciones sincronizadas aún."}\n\nProyecto activo: ${proj?.name||activePid} | Health: ${proj?.health||"?"}% | Status: ${proj?.status||"?"}`;
-          const briefingLang=lang==="es"?"Respond in Spanish.":"Respond in English.";
-          const briefing=await callGroq({apiKey:groqKey,system:`You are Sentinel, an executive management brain. ${briefingLang} Be concise and direct. Use **bold** to highlight what matters.`,messages:[{role:"user",content:briefingPrompt}],maxTokens:500});
+          const briefing=await callGroq({apiKey:groqKey,system:`Sos Sentinel, un cerebro de gestión ejecutivo. Respondé en el mismo idioma que se usó en el historial previo (español o inglés). Sé conciso y directo. Usá **negrita** para destacar lo importante.`,messages:[{role:"user",content:briefingPrompt}],maxTokens:500});
           setMessages([{role:"assistant",content:w},{role:"assistant",content:`🧠 **Briefing de tu última sesión:**\n\n${briefing}`},...prevMsgs.slice(-6)]);
         }catch{
           setMessages([{role:"assistant",content:w},{role:"assistant",content:`📂 _Retomando conversación anterior (${prevMsgs.length} mensajes guardados)_`},...prevMsgs.slice(-6)]);
