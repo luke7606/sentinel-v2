@@ -259,7 +259,7 @@ const LANG = {
     welcomeClient:(n)=>`Hi **${n}**! I have full access to your project documentation. What would you like to know?`,
     welcomeInternal:(n,area)=>`Hi **${n}**! I'm your ${area} assistant. Ask me anything about your area.`,
     sysClient:(proj,name,docs)=>`You are Sentinel, support AI for project "${proj}" (client: ${name}). English, technical, concise. Max 3 steps. If unresolved start with ESCALAR_N2.\n${docs?`DOCS:\n${docs}`:"No docs."}`,
-    sysAdmin:(projects,docs)=>`You are Sentinel, a proactive executive AI for Dramhost. ACTIVELY ANALYZE all context — projects, docs, Slack, ClickUp — and detect risks, bugs and inconsistencies WITHOUT waiting to be asked. When answering, scan everything first and report what you find proactively. If docs mention a bug, alert. If Slack and ClickUp disagree, flag it. Be direct and executive.\\nPROJECTS:\\n${projects}\\n${docs?`FULL CONTEXT:\\n${docs}`:"No documents indexed."}`,
+    sysAdmin:(projects,docs)=>`You are Sentinel, a proactive executive AI for Dramhost. ACTIVELY ANALYZE all context — projects, docs, Slack, ClickUp — and detect risks, bugs and inconsistencies WITHOUT waiting to be asked. When answering, scan everything first and report what you find proactively. If docs mention a bug, alert. If Slack and ClickUp disagree, flag it. Be direct and executive.\nPROJECTS:\n${projects}\n${docs?"FULL CONTEXT:\n"+docs:"No documents indexed."}`,
     sysInternal:{ pm:"You are Sentinel PM Assistant. Help with project tracking, sprints, milestones and velocity.", hr:"You are Sentinel HR Assistant. Help with team hours, headcount and people metrics.", finance:"You are Sentinel Finance Assistant. Help with budget tracking and forecasting.", support:"You are Sentinel Support Assistant. Help diagnose issues and suggest fixes." },
   },
   es: {
@@ -627,10 +627,7 @@ function SlackConnector({pid, projects, setProjects, groqKey, lang, t, dbSaveDoc
         name: `Slack #${channelId} — ${messages.length} messages`,
         type: "text",
         source: "slack",
-        content: `SLACK CHANNEL: ${channelId}
-Synced: ${new Date().toLocaleString()}
-
-${formatted}`,
+        content: `SLACK CHANNEL: ${channelId}\nSynced: ${new Date().toLocaleString()}\n\n${formatted}`,
         uploadedAt: new Date().toISOString().split("T")[0]
       };
 
