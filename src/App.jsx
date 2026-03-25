@@ -719,17 +719,32 @@ export default function Sentinel() {
 
   useEffect(()=>{bottomRef.current?.scrollIntoView({behavior:"smooth"});},[messages]);
 
-  // Load projects from Supabase on mount
+  // Load projects from Supabase on mount — siempre incluye demos
   useEffect(()=>{
     if(!DB_ENABLED){setDbLoaded(true);return;}
     setDbSyncing(true);
-    dbLoad().then(data=>{
+    dbLoad().then(async data=>{
+      // Siempre partir de los demos del código
+      let merged={...DEMO_PROJECTS};
       if(data&&Object.keys(data).length>0){
-        const merged={...DEMO_PROJECTS,...data};setProjects(merged);
-        const realProjs=Object.values(data).filter(p=>!p.isDemo);if(realProjs.length>0)setActive(realProjs[0].id);else setActive(Object.keys(merged)[0]);
+        // Agregar proyectos reales de Supabase (sobreescriben demo si mismo id)
+        merged={...merged,...data};
       }
+      // Si algún demo no está en Supabase y no fue borrado intencionalmente, guardarlo
+      const deletedDemos=JSON.parse(localStorage.getItem("sentinel_deleted_demos")||"[]");
+      for(const demo of Object.values(DEMO_PROJECTS)){
+        if(!deletedDemos.includes(demo.id)&&(!data||!data[demo.id])){
+          try{ await dbSaveProject(demo); }catch{}
+        }
+        // Si fue borrado, sacarlo del merged también
+        if(deletedDemos.includes(demo.id)) delete merged[demo.id];
+      }
+      setProjects(merged);
+      // Activar primer proyecto real o el primero disponible
+      const realProjs=Object.values(merged).filter(p=>!p.isDemo);
+      setActive(realProjs.length>0?realProjs[0].id:Object.keys(merged)[0]);
       setDbLoaded(true);setDbSyncing(false);
-    }).catch(()=>{setDbLoaded(true);setDbSyncing(false);});
+    }).catch(()=>{setProjects(DEMO_PROJECTS);setDbLoaded(true);setDbSyncing(false);});
   },[]);
 
   // Load ClickUp token from Supabase config
@@ -987,6 +1002,12 @@ export default function Sentinel() {
     if(!window.confirm(t.deleteConfirm)) return;
     setProjects(p=>{const n={...p};delete n[projId];return n;});
     if(DB_ENABLED) dbDeleteProject(projId).catch(console.error);
+    // Recordar demos borrados para no re-insertarlos al recargar
+    try{
+      const deleted=JSON.parse(localStorage.getItem("sentinel_deleted_demos")||"[]");
+      if(!deleted.includes(projId)) deleted.push(projId);
+      localStorage.setItem("sentinel_deleted_demos",JSON.stringify(deleted));
+    }catch{}
     const remaining=Object.keys(projects).filter(k=>k!==projId);
     if(remaining.length>0) setActive(remaining[0]);
     else setActive("");
