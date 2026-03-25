@@ -1,44 +1,85 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { supabase } from "./lib/supabase.js";
+import { createClient } from "@supabase/supabase-js";
+
+// ════════════════════════════════════════════════════════════════════════════
+// SENTINEL — CAPA DE DATOS (Supabase)
+// ════════════════════════════════════════════════════════════════════════════
+// Para conectar a Supabase necesitás estas variables en .env.local y Vercel:
+//   VITE_SUPABASE_URL=https://xxxx.supabase.co
+//   VITE_SUPABASE_ANON_KEY=eyJhbG...
+//
+// Tablas requeridas en Supabase (ver sentinel_supabase_setup.sql):
+//   - projects       → proyectos con sus datos
+//   - documents      → docs/archivos subidos a cada proyecto
+//   - chat_sessions  → historial de chat por usuario+proyecto (PRIVADO)
+//   - config         → configuraciones globales (tokens, etc)
+// ════════════════════════════════════════════════════════════════════════════
+const SUPABASE_URL  = import.meta.env.VITE_SUPABASE_URL  || "";
+const SUPABASE_ANON = import.meta.env.VITE_SUPABASE_ANON_KEY || "";
+const sb = (SUPABASE_URL && SUPABASE_ANON) ? createClient(SUPABASE_URL, SUPABASE_ANON) : null;
 // -- LOCAL STORAGE PERSISTENCE --
 const DB_ENABLED = true;
 const LS_PROJECTS = "sentinel_projects";
 const LS_CONFIG   = "sentinel_config";
 
+// ════════════════════════════════════════════════════════════════════════════
+// FUNCIONES DE BASE DE DATOS
+// Estas funciones conectan Sentinel con Supabase.
+// Si Supabase no está configurado, usan localStorage como fallback.
+// ════════════════════════════════════════════════════════════════════════════
+
 async function dbLoad() {
+  // Carga todos los proyectos con sus documentos
+  if (!sb) {
+    try { const raw = localStorage.getItem(LS_PROJECTS); return raw ? JSON.parse(raw) : null; } catch { return null; }
+  }
   try {
-    const { data, error } = await supabase.from("projects").select("*, documents(*)");
+    const { data, error } = await sb.from("projects").select("*, documents(*)");
     if (error || !data?.length) return null;
     const result = {};
-    for (const p of data) { result[p.id] = { ...p, docs: p.documents || [], startDate: p.start_date, dueDate: p.due_date }; }
+    for (const p of data) {
+      result[p.id] = { ...p, docs: p.documents || [], startDate: p.start_date, dueDate: p.due_date };
+    }
     return result;
   } catch { return null; }
 }
 async function dbSaveProject(proj) {
+  // Guarda un proyecto en Supabase (o localStorage como fallback)
+  if (!sb) {
+    try { const all = JSON.parse(localStorage.getItem(LS_PROJECTS)||"{}"); all[proj.id] = proj; localStorage.setItem(LS_PROJECTS, JSON.stringify(all)); } catch(e) { console.error(e); }
+    return;
+  }
   try {
-    const all = JSON.parse(localStorage.getItem(LS_PROJECTS)||"{}");
-    all[proj.id] = proj;
-    localStorage.setItem(LS_PROJECTS, JSON.stringify(all));
-  } catch(e) { console.error("LS save error", e); }
+    const { docs, documents, isDemo, ...data } = proj;
+    await sb.from("projects").upsert({
+      id: data.id, name: data.name, client: data.client, type: data.type,
+      status: data.status, health: data.health, budget: data.budget, spent: data.spent,
+      start_date: data.startDate, due_date: data.dueDate, color: data.color,
+      milestones: data.milestones, team: data.team, tickets: data.tickets, activity: data.activity,
+    });
+  } catch(e) { console.error("dbSaveProject error", e); }
 }
 async function dbDeleteProject(id) {
-  try {
-    const all = JSON.parse(localStorage.getItem(LS_PROJECTS)||"{}");
-    delete all[id];
-    localStorage.setItem(LS_PROJECTS, JSON.stringify(all));
-  } catch(e) { console.error("LS delete error", e); }
+  // Elimina un proyecto de Supabase (o localStorage como fallback)
+  if (!sb) {
+    try { const all = JSON.parse(localStorage.getItem(LS_PROJECTS)||"{}"); delete all[id]; localStorage.setItem(LS_PROJECTS, JSON.stringify(all)); } catch(e) { console.error(e); }
+    return;
+  }
+  try { await sb.from("projects").delete().eq("id", id); } catch(e) { console.error("dbDeleteProject error", e); }
 }
 async function dbSaveDoc(doc, projectId) {
+  // Guarda un documento vinculado a un proyecto
+  if (!sb) {
+    try { const all = JSON.parse(localStorage.getItem(LS_PROJECTS)||"{}"); if(all[projectId]){const docs=all[projectId].docs||[];const idx=docs.findIndex(d=>d.id===doc.id);if(idx>=0)docs[idx]=doc;else docs.push(doc);all[projectId].docs=docs;localStorage.setItem(LS_PROJECTS,JSON.stringify(all));} } catch(e) { console.error(e); }
+    return;
+  }
   try {
-    const all = JSON.parse(localStorage.getItem(LS_PROJECTS)||"{}");
-    if (all[projectId]) {
-      const docs = all[projectId].docs || [];
-      const idx = docs.findIndex(d => d.id === doc.id);
-      if (idx >= 0) docs[idx] = doc; else docs.push(doc);
-      all[projectId].docs = docs;
-      localStorage.setItem(LS_PROJECTS, JSON.stringify(all));
-    }
-  } catch(e) { console.error("LS doc save error", e); }
+    await sb.from("documents").upsert({
+      id: doc.id, project_id: projectId, name: doc.name,
+      type: doc.type, source: doc.source || "upload",
+      content: doc.content, uploaded_at: doc.uploadedAt,
+    });
+  } catch(e) { console.error("dbSaveDoc error", e); }
 }
 async function dbDeleteDoc(id) {
   try {
@@ -50,17 +91,64 @@ async function dbDeleteDoc(id) {
   } catch(e) { console.error("LS doc delete error", e); }
 }
 async function dbSaveConfig(key, value) {
-  try {
-    const cfg = JSON.parse(localStorage.getItem(LS_CONFIG)||"{}");
-    cfg[key] = value;
-    localStorage.setItem(LS_CONFIG, JSON.stringify(cfg));
-  } catch(e) { console.error("LS config save error", e); }
+  // Guarda configuración global (tokens de integraciones, etc)
+  // localStorage siempre como fallback rápido
+  try { const cfg = JSON.parse(localStorage.getItem(LS_CONFIG)||"{}"); cfg[key] = value; localStorage.setItem(LS_CONFIG, JSON.stringify(cfg)); } catch {}
+  if (!sb) return;
+  try { await sb.from("config").upsert({ key, value, updated_at: new Date().toISOString() }); } catch(e) { console.error("dbSaveConfig error", e); }
 }
 async function dbLoadConfig(key) {
+  // Carga configuración — primero Supabase, fallback localStorage
+  if (sb) {
+    try {
+      const { data } = await sb.from("config").select("value").eq("key", key).single();
+      if (data?.value) return data.value;
+    } catch {}
+  }
+  try { const cfg = JSON.parse(localStorage.getItem(LS_CONFIG)||"{}"); return cfg[key] || null; } catch { return null; }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// MEMORIA DE CHAT — privada por usuario+proyecto
+// Usa la tabla chat_sessions en Supabase para persistencia real.
+// Cada usuario solo ve SU historial, nunca el de otros.
+// ════════════════════════════════════════════════════════════════════════════
+async function saveChatHistory(projectId, userId, messages) {
+  // Guardar en localStorage siempre (rápido, fallback)
+  try { localStorage.setItem(`sentinel_chat_${projectId}_${userId}`, JSON.stringify(messages.slice(-30))); } catch {}
+  // Guardar en Supabase para persistencia real entre dispositivos
+  if (!sb) return;
   try {
-    const cfg = JSON.parse(localStorage.getItem(LS_CONFIG)||"{}");
-    return cfg[key] || null;
-  } catch { return null; }
+    const today = new Date().toISOString().split("T")[0];
+    const { data: existing } = await sb.from("chat_sessions")
+      .select("id").eq("project_id", projectId).eq("user_id", userId)
+      .gte("created_at", today).maybeSingle();
+    const payload = { project_id: projectId, user_id: userId, messages: messages.slice(-30) };
+    if (existing?.id) {
+      await sb.from("chat_sessions").update(payload).eq("id", existing.id);
+    } else {
+      await sb.from("chat_sessions").insert(payload);
+    }
+  } catch(e) { console.error("saveChatHistory error", e); }
+}
+
+async function loadChatHistory(projectId, userId) {
+  // Primero intenta Supabase, fallback localStorage
+  if (sb) {
+    try {
+      const { data } = await sb.from("chat_sessions")
+        .select("messages, created_at")
+        .eq("project_id", projectId).eq("user_id", userId)
+        .order("created_at", { ascending: false }).limit(3);
+      if (data?.length) {
+        return data.reverse().flatMap(s => s.messages || []).slice(-25);
+      }
+    } catch {}
+  }
+  try {
+    const raw = localStorage.getItem(`sentinel_chat_${projectId}_${userId}`);
+    return raw ? JSON.parse(raw) : [];
+  } catch { return []; }
 }
 
 
@@ -78,6 +166,32 @@ async function callGroq({ apiKey, system, messages, maxTokens = 700 }) {
   if (d.error) throw new Error(d.error.message);
   return d.choices?.[0]?.message?.content?.trim() || "";
 }
+
+// ════════════════════════════════════════════════════════════════════════════
+// INTEGRACIONES — Cómo agregar una nueva integración a Sentinel
+// ════════════════════════════════════════════════════════════════════════════
+//
+// Sentinel puede conectarse con cualquier app que tenga API.
+// El flujo es siempre el mismo:
+//
+//   1. FETCH  → Llamás a la API de la app (ClickUp, Slack, Notion, etc.)
+//   2. FORMAT → Convertís la respuesta en texto legible
+//   3. INJECT → Lo guardás como "doc" en el proyecto activo
+//   4. AI LEE → buildSystem() lo incluye en el contexto de la AI
+//
+// Integraciones actuales:
+//   ✅ ClickUp   → tareas, listas, espacios
+//   ✅ Slack     → mensajes de canales (ver SlackConnector component)
+//   🔲 Notion    → páginas y bases de datos (ver sync-notion Edge Function)
+//   🔲 WhatsApp  → notificaciones salientes (ver notify-whatsapp Edge Function)
+//   🔲 Google Drive → documentos (agregar fetchGoogleDrive abajo)
+//   🔲 GitHub    → PRs y commits (agregar fetchGitHub abajo)
+//
+// Para agregar una nueva integración:
+//   1. Copiá el patrón de fetchClickUp abajo
+//   2. Agregá el botón de sync en la sección Data Sources del UI
+//   3. El doc que creás se inyecta solo en el contexto de la AI
+// ════════════════════════════════════════════════════════════════════════════
 
 // ── CLICKUP API ───────────────────────────────────────────────
 async function fetchClickUp(path, token) {
@@ -789,21 +903,10 @@ export default function Sentinel() {
       const activePid=u.projectId||localStorage.getItem("sentinel_last_pid")||activeProject;
       let w=u.role==="admin"?t.welcomeAdmin(u.name,Object.keys(projects).length):u.role==="client"?t.welcomeClient(u.name):t.welcomeInternal(u.name,getAreaLabel(u.area));
 
-      // Cargar historial previo
-      let prevMsgs=[];
-      if(DB_ENABLED){
-        try{
-          const saved=await dbLoadConfig(`chat_${activePid}_${u.id}`);
-          if(saved){ const parsed=JSON.parse(saved); if(Array.isArray(parsed)&&parsed.length>0) prevMsgs=parsed.slice(-20); }
-        }catch{}
-      }
-      // También chequear localStorage directo
-      if(prevMsgs.length===0){
-        try{
-          const lsRaw=localStorage.getItem(`sentinel_chat_${activePid}_${u.id}`);
-          if(lsRaw){ const parsed=JSON.parse(lsRaw); if(Array.isArray(parsed)&&parsed.length>0) prevMsgs=parsed.slice(-20); }
-        }catch{}
-      }
+      // ── Cargar historial PRIVADO de este usuario ──────────────
+      // loadChatHistory busca en Supabase (chat_sessions) con fallback localStorage
+      // La clave incluye userId → cada usuario tiene su propia memoria
+      const prevMsgs = await loadChatHistory(activePid, u.id);
 
       if(prevMsgs.length>0&&groqKey){
         // Hay historial — pedir a la AI un briefing proactivo de lo que pasó
@@ -815,10 +918,17 @@ export default function Sentinel() {
           const intCtx=[clickupDoc&&`ClickUp: ${clickupDoc.content.slice(0,800)}`,slackDoc&&`Slack: ${slackDoc.content.slice(0,800)}`].filter(Boolean).join("\n");
           const histText=prevMsgs.slice(-10).map(m=>`${m.role==="user"?"USER":"SENTINEL"}: ${m.content.slice(0,200)}`).join("\n");
           const briefingPrompt=`El usuario ${u.name} (${u.role}) acaba de iniciar sesión. Basándote en el historial de conversación anterior y los datos de integraciones, generá un briefing ejecutivo breve (máximo 4 puntos) que responda: ¿Qué se habló/decidió la última vez? ¿Hay algo nuevo en las apps conectadas que deba saber? ¿Hay riesgos o cambios pendientes?\n\nHISTORIAL PREVIO:\n${histText}\n\nINTEGRACIONES ACTUALES:\n${intCtx||"No hay integraciones sincronizadas aún."}\n\nProyecto activo: ${proj?.name||activePid} | Health: ${proj?.health||"?"}% | Status: ${proj?.status||"?"}`;
-          const briefing=await callGroq({apiKey:groqKey,system:`You are Sentinel, an executive management brain. The user interface language is currently set to ${lang}. If lang is 'en', respond ONLY in English. If lang is 'es', respond ONLY in Spanish. Be concise. Use **bold** for key points.`,messages:[{role:"user",content:briefingPrompt}],maxTokens:500});
-          setMessages([{role:"assistant",content:w},{role:"assistant",content:`🧠 **Briefing de tu última sesión:**\n\n${briefing}`},...prevMsgs.slice(-6)]);
+          // ── IDIOMA: sigue el setting actual de la UI (lang variable) ──
+          const uiLang = lang; // "en" o "es" — viene del toggle de idioma
+          const langInstruction = uiLang === "es"
+            ? "Respondé SIEMPRE en español. Nunca uses inglés."
+            : "ALWAYS respond in English. Never use Spanish.";
+          const briefing=await callGroq({apiKey:groqKey,system:`You are Sentinel, an executive management brain. ${langInstruction} Be concise. Use **bold** for key points.`,messages:[{role:"user",content:briefingPrompt}],maxTokens:500});
+          // La UI muestra solo el briefing — limpia y ejecutiva
+          // El historial completo vive en buildSystem (contexto invisible para la AI)
+          setMessages([{role:"assistant",content:w},{role:"assistant",content:`🧠 **Briefing:**\n\n${briefing}`}]);
         }catch{
-          setMessages([{role:"assistant",content:w},{role:"assistant",content:`📂 _Retomando conversación anterior (${prevMsgs.length} mensajes guardados)_`},...prevMsgs.slice(-6)]);
+          setMessages([{role:"assistant",content:w},{role:"assistant",content:`📂 _Retomando tu última sesión. Preguntame lo que necesités._`}]);
         }
       } else {
         setMessages([{role:"assistant",content:w}]);
@@ -853,6 +963,18 @@ export default function Sentinel() {
     catch(err){console.error(err);}
   };
 
+  // ════════════════════════════════════════════════════════════════════════
+  // BUILD SYSTEM — El cerebro de Sentinel
+  // ════════════════════════════════════════════════════════════════════════
+  // Esta función arma el "system prompt" que recibe la AI antes de responder.
+  // Todo lo que Sentinel "sabe" viene de acá:
+  //   - Estado del proyecto activo (health, status, tickets)
+  //   - Documentos subidos (PDFs, CSVs, notas manuales)
+  //   - Datos de integraciones (ClickUp tasks, Slack messages)
+  //   - Historial de sesiones previas (memoria del usuario)
+  //
+  // Para que la AI sepa algo nuevo → agregalo acá como string al contextParts array.
+  // ════════════════════════════════════════════════════════════════════════
   const buildSystem=useCallback(()=>{
     const proj=projects[pid];
     const today=new Date().toLocaleString();
@@ -881,16 +1003,17 @@ export default function Sentinel() {
       integrations.push(`CLICKUP TASKS (en memoria):\n${tasksSummary}`);
     }
 
-    // ── HISTORIAL DE SESIONES PREVIAS ─────────────────────────
+    // ── HISTORIAL DE SESIONES PREVIAS (contexto invisible para la AI) ──
+    // Lee del localStorage que saveChatHistory mantiene actualizado.
+    // Este historial NO se muestra en pantalla — solo lo ve la AI.
     let sessionMemory=null;
     try{
       const savedRaw=localStorage.getItem(`sentinel_chat_${pid}_${user?.id}`);
       if(savedRaw){
         const savedMsgs=JSON.parse(savedRaw);
         if(Array.isArray(savedMsgs)&&savedMsgs.length>0){
-          // Resumen de las últimas sesiones para contexto de la AI
           const historyText=savedMsgs.slice(-15).map(m=>`${m.role==="user"?"USER":"SENTINEL"}: ${m.content.slice(0,300)}`).join("\n");
-          sessionMemory=`=== HISTORIAL DE SESIONES PREVIAS (último contexto) ===\n${historyText}\n=== FIN HISTORIAL ===`;
+          sessionMemory=`=== PREVIOUS SESSION HISTORY ===\n${historyText}\n=== END HISTORY ===`;
         }
       }
     }catch{}
@@ -907,7 +1030,13 @@ export default function Sentinel() {
       sessionMemory,
     ].filter(Boolean).join("\n\n") || null;
 
-    const metaInstructions=`\nFecha actual: ${today}.\nSOS UN CEREBRO DE GESTIÓN 360. Cuando respondas, considerá TODO el contexto disponible: historial de conversaciones previas, datos de ClickUp, mensajes de Slack, documentos del proyecto. Si el usuario pregunta por algo que se discutió antes, hacé referencia a eso explícitamente. Si hay cambios en las integraciones respecto a lo que se habló, mencionálos proactivamente. Nunca digas que no tenés memoria — tenés todo el contexto de arriba.`;
+    // ── INSTRUCCIONES BASE + IDIOMA ──────────────────────────────
+    // El idioma sigue el setting de la UI. Si está en EN → responde en inglés.
+    // Agregá más integraciones al contexto acá abajo (Notion, Google Drive, etc.)
+    const uiLanguage = lang === "es"
+      ? "SIEMPRE respondé en español. Nunca uses inglés."
+      : "ALWAYS respond in English only. Never use Spanish or any other language.";
+    const metaInstructions=`\nToday: ${today}.\n${uiLanguage}\nYou are a 360 management brain. Use ALL available context: previous history, ClickUp tasks, Slack messages, project docs. If the user asks about something discussed before, reference it explicitly. If integrations show changes since last session, proactively mention them. Never say you have no memory.`;
 
     if(!user)return"You are Sentinel AI.";
     if(user.role==="client")return t.sysClient(proj?.name,user.name,contextParts)+metaInstructions;
@@ -940,11 +1069,10 @@ export default function Sentinel() {
           setMessages(p=>[...p,{role:"assistant",content:reply}]);
         }
       }
-      // Guardar conversación por usuario+proyecto para memoria persistente
+      // ── Guardar historial privado por usuario+proyecto ──────────
+      // saveChatHistory guarda en Supabase chat_sessions + localStorage
       const convToSave=[...newMsgs,{role:"assistant",content:reply}].slice(-30);
-      dbSaveConfig(`chat_${pid}_${user?.id}`,JSON.stringify(convToSave)).catch(console.error);
-      // También guardar con clave usuario-específica para el buildSystem
-      try{ localStorage.setItem(`sentinel_chat_${pid}_${user?.id}`,JSON.stringify(convToSave)); }catch{}
+      saveChatHistory(pid, user?.id, convToSave).catch(console.error);
     }catch(err){setMessages(p=>[...p,{role:"assistant",content:`❌ Error: ${err.message}`,error:true}]);}
     finally{setLoading(false);inputRef.current?.focus();}
   };
