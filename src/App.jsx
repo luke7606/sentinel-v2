@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
+import { supabase } from "./lib/supabase.js";
 // -- LOCAL STORAGE PERSISTENCE --
 const DB_ENABLED = true;
 const LS_PROJECTS = "sentinel_projects";
@@ -6,8 +7,11 @@ const LS_CONFIG   = "sentinel_config";
 
 async function dbLoad() {
   try {
-    const raw = localStorage.getItem(LS_PROJECTS);
-    return raw ? JSON.parse(raw) : null;
+    const { data, error } = await supabase.from("projects").select("*, documents(*)");
+    if (error || !data?.length) return null;
+    const result = {};
+    for (const p of data) { result[p.id] = { ...p, docs: p.documents || [], startDate: p.start_date, dueDate: p.due_date }; }
+    return result;
   } catch { return null; }
 }
 async function dbSaveProject(proj) {
