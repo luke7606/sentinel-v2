@@ -989,30 +989,40 @@ export default function Sentinel() {
       setCuTasks(tasks);
       setCuLastSync(new Date());
 
-      // Formatear tareas como texto legible para la AI
-      // Incluye: nombre, status, fecha, asignado, lista de origen
-      const tasksSummary = tasks.map(tk =>
-        `[${tk.listName||""}][${tk.status?.status?.toUpperCase()||"?"}] ${tk.name}` +
-        ` | Due: ${tk.due_date ? new Date(parseInt(tk.due_date)).toLocaleDateString() : "no date"}` +
-        ` | Assignee: ${tk.assignees?.[0]?.username || "unassigned"}`
-      ).join("\n");
+      // ── STEP 2: Formatear como texto legible para la AI ──────────
+      // Agrupado por lista para que la AI entienda la estructura
+      const byList = {};
+      tasks.forEach(tk => {
+        const list = tk.listName || "General";
+        if (!byList[list]) byList[list] = [];
+        byList[list].push(tk);
+      });
 
-      // Crear doc de ClickUp para el proyecto activo
-      // La AI lo lee en buildSystem() y puede responder sobre las tareas
-      const clickupDoc = {
-        id: "clickup-sync-" + Date.now(),
-        name: `ClickUp Sync — ${tasks.length} tasks from ${listsInfo.length || 1} list(s)`,
-        type: "text",
-        source: "clickup",
-        content: `CLICKUP LIVE DATA (synced ${new Date().toLocaleString()}):\n\nLists synced: ${listsInfo.map(l=>l.name).join(", ") || "1 list"}\n\n${tasksSummary}`,
-        uploadedAt: new Date().toISOString().split("T")[0]
-      };
+      const tasksSummary = Object.entries(byList).map(([listName, listTasks]) => {
+        const taskLines = listTasks.map(tk => {
+          const status = tk.status?.status?.toUpperCase() || "?";
+          const due = tk.due_date ? new Date(parseInt(tk.due_date)).toLocaleDateString() : "no date";
+          const assignee = tk.assignees?.[0]?.username || "unassigned";
+          const priority = tk.priority?.priority || "normal";
+          return `  [${status}][${priority}] ${tk.name} | Due: ${due} | ${assignee}`;
+        }).join("\n");
+        return `LIST: ${listName} (${listTasks.length} tasks)\n${taskLines}`;
+      }).join("\n\n");
 
-      setProjects(p => ({
-        ...p,
-        [pid]: { ...p[pid], docs: [...(p[pid]?.docs||[]).filter(d=>d.source!=="clickup"), clickupDoc] }
-      }));
-      if(DB_ENABLED) dbSaveDoc(clickupDoc, pid).catch(console.error);
+      const content = [
+        `Lists synced: ${listsInfo.map(l=>l.name).join(", ") || "1 list"}`,
+        `Total tasks: ${tasks.length}`,
+        `Overdue: ${tasks.filter(tk => tk.due_date && parseInt(tk.due_date) < Date.now() && !["complete","closed"].includes(tk.status?.status)).length}`,
+        `In progress: ${tasks.filter(tk => tk.status?.status === "in progress").length}`,
+        `Open/blocked: ${tasks.filter(tk => ["open","blocked"].includes(tk.status?.status)).length}`,
+        "",
+        tasksSummary,
+      ].join("\n");
+
+      // ── STEP 3: Inject usando el patrón estándar ─────────────────
+      // injectIntegrationDoc() guarda el doc en el proyecto activo
+      // y lo persiste en Supabase para que la AI lo tenga siempre fresco
+      await injectIntegrationDoc(pid, "clickup", "ClickUp Tasks", content, setProjects);
 
     } catch(err) { alert(`ClickUp sync error: ${err.message}`); }
     finally { setCuSyncing(false); }
@@ -1029,6 +1039,102 @@ export default function Sentinel() {
     try{const lists=await getClickUpLists(cuToken,spaceId);setCuLists(lists);}
     catch(err){console.error(err);}
   };
+
+  // ════════════════════════════════════════════════════════════════════════
+  // AUTO-SYNC SILENCIOSO — se ejecuta al entrar al chat
+  // ════════════════════════════════════════════════════════════════════════
+  // Cuando el usuario navega al AI Chat, Sentinel sincroniza automáticamente
+  // todas las integraciones configuradas. El usuario no ve nada — la AI
+  // simplemente ya tiene los datos más frescos cuando responde.
+  //
+  // Para agregar una nueva integración al auto-sync:
+  //   1. Obtener el token de la app (ya guardado en config)
+  //   2. Llamar al fetcher de la app
+  //   3. Llamar a injectIntegrationDoc()
+  // ════════════════════════════════════════════════════════════════════════
+  const autoSyncIntegrations = useCallback(async () => {
+    if (!cuToken) return; // No hay token configurado, nada que sincronizar
+
+    try {
+      // ── AUTO-SYNC CLICKUP ─────────────────────────────────────
+      // Si hay un folder o lista configurada, sincroniza silenciosamente
+      if (cuFolderId || cuListId) {
+        let tasks = [], listsInfo = [];
+
+        if (cuFolderId) {
+          const result = await getClickUpFolderTasks(cuToken, cuFolderId);
+          tasks = result.tasks;
+          listsInfo = result.lists;
+          setCuSyncedLists(listsInfo);
+        } else {
+          tasks = await getClickUpTasks(cuToken, cuListId);
+        }
+
+        setCuTasks(tasks);
+        setCuLastSync(new Date());
+
+        // Formatear y guardar (mismo formato que el sync manual)
+        const byList = {};
+        tasks.forEach(tk => {
+          const list = tk.listName || "General";
+          if (!byList[list]) byList[list] = [];
+          byList[list].push(tk);
+        });
+
+        const tasksSummary = Object.entries(byList).map(([listName, listTasks]) =>
+          `LIST: ${listName} (${listTasks.length} tasks)
+` +
+          listTasks.map(tk =>
+            `  [${tk.status?.status?.toUpperCase()||"?"}] ${tk.name}` +
+            ` | Due: ${tk.due_date ? new Date(parseInt(tk.due_date)).toLocaleDateString() : "no date"}` +
+            ` | ${tk.assignees?.[0]?.username || "unassigned"}`
+          ).join("
+")
+        ).join("
+
+");
+
+        const content = [
+          `Lists: ${listsInfo.map(l=>l.name).join(", ") || "1 list"}`,
+          `Total: ${tasks.length} tasks`,
+          `Overdue: ${tasks.filter(tk => tk.due_date && parseInt(tk.due_date) < Date.now() && !["complete","closed"].includes(tk.status?.status)).length}`,
+          `In progress: ${tasks.filter(tk => tk.status?.status === "in progress").length}`,
+          `Open: ${tasks.filter(tk => tk.status?.status === "open").length}`,
+          "",
+          tasksSummary,
+        ].join("
+");
+
+        await injectIntegrationDoc(pid, "clickup", "ClickUp Auto-Sync", content, setProjects);
+      }
+
+      // ── AUTO-SYNC SLACK ───────────────────────────────────────
+      // Slack se sincroniza via SlackConnector component (ya implementado)
+      // Para auto-sync de Slack, el token se guarda en localStorage
+
+      // ── AGREGAR OTRAS INTEGRACIONES ACÁ ──────────────────────
+      // Ejemplo Notion (cuando tengas el token):
+      //   const notionToken = await dbLoadConfig("notion_token");
+      //   const notionDbId  = await dbLoadConfig("notion_db_id");
+      //   if (notionToken && notionDbId) {
+      //     const pages = await fetchNotion(notionToken, notionDbId);
+      //     const text  = pages.map(p => p.title + ": " + p.content).join("
+");
+      //     await injectIntegrationDoc(pid, "notion", "Notion Pages", text, setProjects);
+      //   }
+
+    } catch (err) {
+      console.warn("Auto-sync error (non-critical):", err.message);
+      // Auto-sync falla silenciosamente — no interrumpe al usuario
+    }
+  }, [cuToken, cuFolderId, cuListId, pid]);
+
+  // Ejecutar auto-sync cada vez que el usuario navega al chat
+  useEffect(() => {
+    if (view === "chat" && user && groqKey) {
+      autoSyncIntegrations();
+    }
+  }, [view, user?.id, pid]); // Se re-ejecuta al cambiar de proyecto o usuario
 
   // ════════════════════════════════════════════════════════════════════════
   // BUILD SYSTEM — El cerebro de Sentinel
@@ -1060,14 +1166,25 @@ export default function Sentinel() {
       : null;
 
     // ── INTEGRACIONES CONECTADAS ──────────────────────────────
-    const integrations=[];
-    const clickupDoc=proj?.docs?.find(d=>d.source==="clickup");
-    const slackDoc=proj?.docs?.find(d=>d.source==="slack");
-    if(clickupDoc) integrations.push(`CLICKUP (sincronizado): ${clickupDoc.content.slice(0,1500)}`);
-    if(slackDoc)   integrations.push(`SLACK (sincronizado): ${slackDoc.content.slice(0,1500)}`);
-    if(cuTasks.length>0&&!clickupDoc){
-      const tasksSummary=cuTasks.slice(0,20).map(tk=>`[${tk.status?.status?.toUpperCase()}] ${tk.name} | Due:${tk.due_date?new Date(parseInt(tk.due_date)).toLocaleDateString():"?"} | ${tk.assignees?.[0]?.username||"?"}`).join("\n");
-      integrations.push(`CLICKUP TASKS (en memoria):\n${tasksSummary}`);
+    // Busca todos los docs que vienen de integraciones (source != "upload" y != "manual")
+    // Cada integración agrega su doc via injectIntegrationDoc()
+    // La AI ve TODOS los datos de todas las integraciones conectadas
+    const integrationSources = ["clickup", "slack", "notion", "gsheets", "github", "gitlab"];
+    const integrations = integrationSources
+      .map(source => {
+        const doc = proj?.docs?.find(d => d.source === source);
+        if (!doc) return null;
+        return `=== ${source.toUpperCase()} DATA ===
+${doc.content.slice(0, 2000)}`;
+      })
+      .filter(Boolean);
+
+    // Fallback: si hay tareas en memoria de React pero no hay doc guardado
+    if (integrations.length === 0 && cuTasks.length > 0) {
+      const tasksSummary = cuTasks.slice(0, 30).map(tk =>
+        `[${tk.status?.status?.toUpperCase()}] ${tk.name} | Due: ${tk.due_date ? new Date(parseInt(tk.due_date)).toLocaleDateString() : "?"} | ${tk.assignees?.[0]?.username || "?"}`
+      ).join("\n");
+      integrations.push(`=== CLICKUP TASKS (in memory) ===\n${tasksSummary}`);
     }
 
     // ── HISTORIAL DE SESIONES PREVIAS (contexto invisible para la AI) ──
@@ -1103,7 +1220,15 @@ export default function Sentinel() {
     const uiLanguage = lang === "es"
       ? "SIEMPRE respondé en español. Nunca uses inglés."
       : "ALWAYS respond in English only. Never use Spanish or any other language.";
-    const metaInstructions=`\nToday: ${today}.\n${uiLanguage}\nYou are a 360 management brain. Use ALL available context: previous history, ClickUp tasks, Slack messages, project docs. If the user asks about something discussed before, reference it explicitly. If integrations show changes since last session, proactively mention them. Never say you have no memory.`;
+    const metaInstructions=`\nToday: ${today}.\n${uiLanguage}\n` +
+    `You are Sentinel — a 360 management brain, NOT a chatbot.\n` +
+    `CRITICAL RULES:\n` +
+    `1. ALWAYS use the integration data above (ClickUp, Slack, etc.) to answer questions about tasks, tickets, or project status. The data is LIVE and FRESH.\n` +
+    `2. If asked "any new tickets?" or "what changed?", look at the ClickUp data above and list specific tasks by name, status, and due date.\n` +
+    `3. If ClickUp data shows overdue tasks, proactively alert the user even if not asked.\n` +
+    `4. Reference previous conversation history when relevant.\n` +
+    `5. Never say "I don't have access" — you have all the data above.\n` +
+    `6. Be executive and direct. No filler sentences.`;
 
     if(!user)return"You are Sentinel AI.";
     if(user.role==="client")return t.sysClient(proj?.name,user.name,contextParts)+metaInstructions;
