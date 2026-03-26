@@ -207,6 +207,29 @@ async function getClickUpTasks(token, listId) {
   return data.tasks || [];
 }
 
+// ── SYNC ALL LISTS FROM A FOLDER ─────────────────────────────────────────
+// Trae todas las listas de un folder de ClickUp en paralelo.
+// Así conectás todo el folder "Sentinel Demo" de una sola vez.
+// Folder ID: lo encontrás en la URL de ClickUp cuando clickeás el folder.
+async function getClickUpFolderTasks(token, folderId) {
+  // 1. Traer todas las listas del folder
+  const listsData = await fetchClickUp(`/folder/${folderId}/list`, token);
+  const lists = listsData.lists || [];
+  if (!lists.length) throw new Error("No lists found in folder");
+
+  // 2. Traer tareas de cada lista en paralelo
+  const allTaskArrays = await Promise.all(
+    lists.map(list =>
+      fetchClickUp(`/list/${list.id}/task?subtasks=true&include_closed=true`, token)
+        .then(d => (d.tasks || []).map(t => ({ ...t, listName: list.name, listId: list.id })))
+        .catch(() => [])
+    )
+  );
+
+  // 3. Aplanar y retornar todas las tareas con el nombre de su lista
+  return { tasks: allTaskArrays.flat(), lists };
+}
+
 async function getClickUpSpaces(token, teamId) {
   const data = await fetchClickUp(`/team/${teamId}/space?archived=false`, token);
   return data.spaces || [];
@@ -829,6 +852,8 @@ export default function Sentinel() {
   const [cuLastSync, setCuLastSync]   = useState(null);
   const [cuSpaces, setCuSpaces]       = useState([]);
   const [cuLists, setCuLists]         = useState([]);
+  const [cuFolderId, setCuFolderId]   = useState(localStorage.getItem("sentinel_cu_folder")||"901317793533");
+  const [cuSyncedLists, setCuSyncedLists] = useState([]);
 
   const fileRef   = useRef();
   const bottomRef = useRef();
@@ -937,18 +962,60 @@ export default function Sentinel() {
   };
 
   // ── CLICKUP SYNC ───────────────────────────────────────────
+  // ── CLICKUP SYNC ──────────────────────────────────────────────────────────
+  // Soporta dos modos:
+  //   1. FOLDER MODE: sincroniza todas las listas del folder (recomendado para demo)
+  //   2. LIST MODE:   sincroniza una lista específica (modo legacy)
+  // Para cambiar de modo, el usuario puede pegar un Folder ID o un List ID.
   const syncClickUp=async()=>{
-    if(!cuToken||!cuListId){alert(lang==="es"?"Configurá el token y List ID de ClickUp primero":"Configure ClickUp token and List ID first");return;}
+    if(!cuToken){alert(lang==="es"?"Configurá el token de ClickUp primero":"Configure ClickUp token first");return;}
     setCuSyncing(true);
     try{
-      const tasks=await getClickUpTasks(cuToken,cuListId);
-      setCuTasks(tasks);setCuLastSync(new Date());
-      // Inject tasks as context into active project docs
-      const tasksSummary=tasks.map(tk=>`[${tk.status?.status?.toUpperCase()}] ${tk.name} | Due:${tk.due_date?new Date(parseInt(tk.due_date)).toLocaleDateString():"?"} | Assignee:${tk.assignees?.[0]?.username||"?"}`).join("\n");
-      const clickupDoc={id:"clickup-sync-"+Date.now(),name:`ClickUp Sync — ${tasks.length} tasks`,type:"text",source:"clickup",content:`CLICKUP LIVE DATA (synced ${new Date().toLocaleString()}):\n${tasksSummary}`,uploadedAt:new Date().toISOString().split("T")[0]};
-      setProjects(p=>({...p,[pid]:{...p[pid],docs:[...(p[pid]?.docs||[]).filter(d=>d.source!=="clickup"),clickupDoc]}}));
-    }catch(err){alert(`ClickUp sync error: ${err.message}`);}
-    finally{setCuSyncing(false);}
+      let tasks=[], listsInfo=[];
+
+      if(cuFolderId){
+        // FOLDER MODE — trae todas las listas del folder de una vez
+        const result = await getClickUpFolderTasks(cuToken, cuFolderId);
+        tasks = result.tasks;
+        listsInfo = result.lists;
+        setCuSyncedLists(listsInfo);
+      } else if(cuListId) {
+        // LIST MODE — una sola lista
+        tasks = await getClickUpTasks(cuToken, cuListId);
+      } else {
+        alert("Enter a Folder ID or select a List"); return;
+      }
+
+      setCuTasks(tasks);
+      setCuLastSync(new Date());
+
+      // Formatear tareas como texto legible para la AI
+      // Incluye: nombre, status, fecha, asignado, lista de origen
+      const tasksSummary = tasks.map(tk =>
+        `[${tk.listName||""}][${tk.status?.status?.toUpperCase()||"?"}] ${tk.name}` +
+        ` | Due: ${tk.due_date ? new Date(parseInt(tk.due_date)).toLocaleDateString() : "no date"}` +
+        ` | Assignee: ${tk.assignees?.[0]?.username || "unassigned"}`
+      ).join("\n");
+
+      // Crear doc de ClickUp para el proyecto activo
+      // La AI lo lee en buildSystem() y puede responder sobre las tareas
+      const clickupDoc = {
+        id: "clickup-sync-" + Date.now(),
+        name: `ClickUp Sync — ${tasks.length} tasks from ${listsInfo.length || 1} list(s)`,
+        type: "text",
+        source: "clickup",
+        content: `CLICKUP LIVE DATA (synced ${new Date().toLocaleString()}):\n\nLists synced: ${listsInfo.map(l=>l.name).join(", ") || "1 list"}\n\n${tasksSummary}`,
+        uploadedAt: new Date().toISOString().split("T")[0]
+      };
+
+      setProjects(p => ({
+        ...p,
+        [pid]: { ...p[pid], docs: [...(p[pid]?.docs||[]).filter(d=>d.source!=="clickup"), clickupDoc] }
+      }));
+      if(DB_ENABLED) dbSaveDoc(clickupDoc, pid).catch(console.error);
+
+    } catch(err) { alert(`ClickUp sync error: ${err.message}`); }
+    finally { setCuSyncing(false); }
   };
 
   const loadSpaces=async()=>{
@@ -1359,40 +1426,45 @@ export default function Sentinel() {
             {user.role==="admin"&&<div style={{display:"flex",gap:8,alignItems:"center",marginBottom:16}}><span style={S.label}>{t.projectLabel}</span><select value={activeProject} onChange={e=>{setActive(e.target.value);localStorage.setItem("sentinel_last_pid",e.target.value);}} style={S.select}>{Object.values(projects).map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></div>}
 
             {/* ClickUp real connector */}
-            <div style={{...S.card,marginBottom:16,borderColor: cuToken?"#166534":"#334155"}}>
+            <div style={{...S.card,marginBottom:16,borderColor:cuTasks.length>0?"#166534":cuToken?"#1e3a5f":"#334155"}}>
               <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12}}>
                 <span style={{fontSize:20}}>🎯</span>
-                <div><div style={{fontSize:13,fontWeight:700,color:"#e2e8f0"}}>ClickUp — Live Connection</div><div style={{fontSize:11,color:"#64748b"}}>{cuTasks.length>0?`${cuTasks.length} ${t.tasksLoaded}`:t.configureClickup}</div></div>
-                {cuToken&&<div style={{marginLeft:"auto",width:8,height:8,borderRadius:"50%",background:"#10b981"}}/>}
+                <div>
+                  <div style={{fontSize:13,fontWeight:700,color:"#e2e8f0"}}>ClickUp — Live Connection</div>
+                  <div style={{fontSize:11,color:"#64748b"}}>
+                    {cuTasks.length>0
+                      ? `${cuTasks.length} tasks synced from ${cuSyncedLists.length||1} list(s)`
+                      : "Connect to sync all your ClickUp tasks"}
+                  </div>
+                </div>
+                {cuTasks.length>0&&<div style={{marginLeft:"auto",width:8,height:8,borderRadius:"50%",background:"#10b981"}}/>}
               </div>
               <div style={{display:"flex",flexDirection:"column",gap:8}}>
                 <div>
                   <label style={S.label}>API Token (pk_...)</label>
-                  <input style={S.input} type="password" placeholder="pk_72869169_..." value={cuToken} onChange={e=>{const v=e.target.value;setCuToken(v);localStorage.setItem("sentinel_cu_token",v);if(DB_ENABLED)dbSaveConfig("cu_token",v).catch(console.error);}} onBlur={()=>{if(cuToken)loadSpaces();}}/>
+                  <input style={S.input} type="password" placeholder="pk_72869169_..." value={cuToken}
+                    onChange={e=>{const v=e.target.value;setCuToken(v);localStorage.setItem("sentinel_cu_token",v);if(DB_ENABLED)dbSaveConfig("cu_token",v).catch(console.error);}}/>
                 </div>
-                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
-                  <div>
-                    <label style={S.label}>Space</label>
-                    <select style={S.select} onChange={e=>loadLists(e.target.value)}>
-                      <option value="">— Select Space —</option>
-                      {cuSpaces.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
-                    </select>
-                  </div>
-                  <div>
-                    <label style={S.label}>List ID</label>
-                    <select style={S.select} value={cuListId} onChange={e=>{const v=e.target.value;setCuListId(v);localStorage.setItem("sentinel_cu_list",v);if(DB_ENABLED)dbSaveConfig("cu_list",v).catch(console.error);}}>
-                      <option value="">— Select List —</option>
-                      {cuLists.map(l=><option key={l.id} value={l.id}>{l.name}</option>)}
-                    </select>
+                <div>
+                  <label style={S.label}>Folder ID — sync all lists at once</label>
+                  <input style={S.input} placeholder="901317793533 (from ClickUp folder URL)"
+                    value={cuFolderId}
+                    onChange={e=>{const v=e.target.value;setCuFolderId(v);localStorage.setItem("sentinel_cu_folder",v);}}/>
+                  <div style={{fontSize:10,color:"#475569",marginTop:3}}>
+                    Find it in the URL when you click a folder: app.clickup.com/.../f/FOLDER_ID
                   </div>
                 </div>
-                <div style={{display:"flex",gap:8}}>
-                  <button onClick={()=>loadSpaces()} style={S.smBtn}><I.Refresh/> {t.loadSpaces}</button>
-                  <button onClick={syncClickUp} disabled={cuSyncing||!cuToken||!cuListId} style={{...S.smBtn,borderColor:"#7c3aed",color:"#a78bfa"}}>
-                    {cuSyncing?<><Dots/> {t.syncing}</>:<><I.Refresh/> {t.syncTasks}</>}
+                <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                  <button onClick={syncClickUp} disabled={cuSyncing||!cuToken} style={{...S.smBtn,borderColor:"#7c3aed",color:"#a78bfa",flex:1,justifyContent:"center"}}>
+                    {cuSyncing?<><Dots/> Syncing all lists...</>:<><I.Refresh/> Sync All Lists</>}
                   </button>
                 </div>
-                {cuLastSync&&<div style={{fontSize:11,color:"#10b981"}}>✓ {t.lastSynced} {cuLastSync.toLocaleString()} · {cuTasks.length} tasks</div>}
+                {cuLastSync&&(
+                  <div style={{fontSize:11,color:"#10b981"}}>
+                    ✓ Synced {cuLastSync.toLocaleString()} · {cuTasks.length} tasks
+                    {cuSyncedLists.length>0&&<span style={{color:"#64748b"}}> from: {cuSyncedLists.map(l=>l.name).join(", ")}</span>}
+                  </div>
+                )}
               </div>
             </div>
 
