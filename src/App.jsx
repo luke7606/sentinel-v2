@@ -1087,7 +1087,7 @@ export default function Sentinel() {
           listTasks.map(tk =>
             `  [${tk.status?.status?.toUpperCase()||"?"}] ${tk.name}` +
             ` | Due: ${tk.due_date ? new Date(parseInt(tk.due_date)).toLocaleDateString() : "no date"}` +
-            ` | ${tk.assignees?.[0]?.username || "unassigned"}`
+            ` | ${tk.assignees?.[0]?.username || 'unassigned'}`
           ).join("
 ")
         ).join("
