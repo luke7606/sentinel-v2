@@ -998,14 +998,16 @@ export default function Sentinel() {
         byList[list].push(tk);
       });
 
-      const tasksSummary = Object.entries(byList).map(([listName, listTasks]) => {
-        const taskLines = listTasks.map(tk => {
-          const status = tk.status?.status?.toUpperCase() || "?";
-          const due = tk.due_date ? new Date(parseInt(tk.due_date)).toLocaleDateString() : "no date";
-          const assignee = tk.assignees?.[0]?.username || "unassigned";
-          const priority = tk.priority?.priority || "normal";
-          return `  [${status}][${priority}] ${tk.name} | Due: ${due} | ${assignee}`;
-        }).join("\n");
+        const tasksSummary = Object.entries(byList).map(([listName, listTasks]) => {
+          const header = "LIST: " + listName + " (" + listTasks.length + " tasks)";
+          const rows = listTasks.map(tk => {
+            const st  = tk.status?.status?.toUpperCase() || "?";
+            const due = tk.due_date ? new Date(parseInt(tk.due_date)).toLocaleDateString() : "no date";
+            const who = tk.assignees?.[0]?.username || "unassigned";
+            return "  [" + st + "] " + tk.name + " | Due: " + due + " | " + who;
+          }).join("\n");
+          return header + "\n" + rows;
+        }).join("\n\n");
         return `LIST: ${listName} (${listTasks.length} tasks)\n${taskLines}`;
       }).join("\n\n");
 
