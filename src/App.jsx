@@ -1008,8 +1008,6 @@ export default function Sentinel() {
           }).join("\n");
           return header + "\n" + rows;
         }).join("\n\n");
-        return `LIST: ${listName} (${listTasks.length} tasks)\n${taskLines}`;
-      }).join("\n\n");
 
       const content = [
         `Lists synced: ${listsInfo.map(l=>l.name).join(", ") || "1 list"}`,
